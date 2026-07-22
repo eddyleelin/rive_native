@@ -178,17 +178,7 @@ base class StateMachinePainter extends BasicArtboardPainter
       scaleFactor: layoutScaleFactor,
     );
 
-    if (event is PointerDownEvent) {
-      stateMachine.pointerDown(position, pointerId: event.pointer);
-    } else if (event is PointerUpEvent) {
-      stateMachine.pointerUp(position, pointerId: event.pointer);
-    } else if (event is PointerMoveEvent) {
-      stateMachine.pointerMove(position, pointerId: event.pointer);
-    } else if (event is PointerHoverEvent) {
-      stateMachine.pointerMove(position, pointerId: event.pointer);
-    } else if (event is PointerExitEvent) {
-      stateMachine.pointerExit(position, pointerId: event.pointer);
-    }
+    dispatchPointerEvent(stateMachine, event, position);
   }
 
   @override

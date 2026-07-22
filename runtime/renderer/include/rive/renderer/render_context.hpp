@@ -306,7 +306,8 @@ public:
     // Creates a RenderCanvas: a GPU texture usable as both a render target
     // (for rendering into) and a render image (for compositing into draws).
     rcp<RenderCanvas> makeRenderCanvas(uint32_t width, uint32_t height);
-    rive::ore::Context* getOreContext();
+    rive::ore::Context* ore() override;
+    rive::ore::Context* getOreContext() { return ore(); }
 #endif
 
 private:
@@ -657,7 +658,8 @@ private:
         // clockwiseAtomic mode.
         //
         // "length" is the length in pixels of this allocation and must be a
-        // multiple of 32*32, in order to support 32x32 tiling.
+        // multiple of BUFFER_IMAGE_TILE_SIZE^2, in order to support internal
+        // tiling.
         //
         // Returns the offset of the allocated range within the coverage buffer,
         // or -1 if there was not room.

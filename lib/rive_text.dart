@@ -71,12 +71,44 @@ enum TextOverflow {
   clipped,
   ellipsis,
   fit,
+  fitFontSize,
 }
 
 enum TextOrigin {
   top,
   baseline,
 }
+
+/// Top edge the vertical bounding box is trimmed to.
+enum TextTrimTop { none, cap, ex }
+
+/// Bottom edge the vertical bounding box is trimmed to.
+enum TextTrimBottom { none, alphabetic, text }
+
+/// [Text.verticalTrimValue] packs an independent top and bottom trim edge so
+/// new edge types can be added later without introducing a new property. The
+/// top edge occupies the low byte and the bottom edge the next byte; the
+/// remaining bits (and the high 16) are reserved for future values.
+const int textTrimTopShift = 0;
+const int textTrimBottomShift = 8;
+const int textTrimFieldMask = 0xFF;
+
+TextTrimTop textTrimTop(int packed) {
+  final index = (packed >> textTrimTopShift) & textTrimFieldMask;
+  return index < TextTrimTop.values.length
+      ? TextTrimTop.values[index]
+      : TextTrimTop.none;
+}
+
+TextTrimBottom textTrimBottom(int packed) {
+  final index = (packed >> textTrimBottomShift) & textTrimFieldMask;
+  return index < TextTrimBottom.values.length
+      ? TextTrimBottom.values[index]
+      : TextTrimBottom.none;
+}
+
+int packTextVerticalTrim(TextTrimTop top, TextTrimBottom bottom) =>
+    (top.index << textTrimTopShift) | (bottom.index << textTrimBottomShift);
 
 void _reverseRuns(List<GlyphRun> runs, int start, int count) {
   int halfCount = count ~/ 2;
@@ -562,6 +594,12 @@ abstract class Font {
 
   double get ascent;
   double get descent;
+
+  /// Distances from the baseline to the top of capital / lowercase letters,
+  /// stored negative (up is -Y) like [ascent]. Both fall back to [ascent] when
+  /// the font does not provide the metric.
+  double get capHeight;
+  double get xHeight;
 
   double lineHeight(double fontSize) => (-ascent + descent) * fontSize;
 

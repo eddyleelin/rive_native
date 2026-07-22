@@ -1,6 +1,6 @@
 # Bubblegum fork of `rive_native`
 
-This is a fork of the published `rive_native` **0.1.8** package (MIT, © Rive)
+This is a fork of the published `rive_native` **0.1.9** package (MIT, © Rive)
 with a single, surgical patch. It is consumed by the Bubblegum app via a
 `dependency_overrides` git ref, mirroring the `flutter_soloud` fork.
 

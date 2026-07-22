@@ -4,6 +4,11 @@ import 'package:flutter/foundation.dart';
 
 class BinaryReader {
   final _utf8Decoder = const Utf8Decoder();
+  // Tolerant decoder used only for console spans (readStringWithLength). The
+  // console stream carries Luau-produced text and can desync on malformed
+  // framing; decoding malformed bytes to U+FFFD keeps a bad span from crashing
+  // the Dart VM instead of throwing a FormatException.
+  final _utf8DecoderLossy = const Utf8Decoder(allowMalformed: true);
   final ByteData buffer;
   final Endian endian;
 
@@ -137,8 +142,16 @@ class BinaryReader {
     return _utf8Decoder.convert(bytes);
   }
 
+  /// Reads [length] bytes and decodes them as UTF-8, allowing malformed
+  /// sequences (invalid bytes become U+FFFD) rather than throwing.
+  ///
+  /// Unlike [readString], this does NOT enforce strict UTF-8. It is intended
+  /// for Luau console spans, where a framing desync can leave a byte range that
+  /// isn't valid UTF-8; tolerating that keeps a bad span from crashing the VM.
+  /// Do not use it for data where malformed bytes should signal corruption —
+  /// prefer [readString] there.
   String readStringWithLength(int length) =>
-      _utf8Decoder.convert(read(length, false));
+      _utf8DecoderLossy.convert(read(length, false));
 
   Uint8List read(int length, [bool allocNew = true]) {
     if (kIsWeb) {

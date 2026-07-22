@@ -322,6 +322,26 @@ float fontDescent(WasmPtr fontPtr)
     return font->lineMetrics().descent;
 }
 
+float fontCapHeight(WasmPtr fontPtr)
+{
+    auto font = reinterpret_cast<HBFont*>(fontPtr);
+    if (font == nullptr)
+    {
+        return 0.0f;
+    }
+    return font->lineMetrics().capHeight;
+}
+
+float fontXHeight(WasmPtr fontPtr)
+{
+    auto font = reinterpret_cast<HBFont*>(fontPtr);
+    if (font == nullptr)
+    {
+        return 0.0f;
+    }
+    return font->lineMetrics().xHeight;
+}
+
 float convertStringToNumber(WasmPtr strPtr)
 {
     auto str = reinterpret_cast<char*>(strPtr);
@@ -614,6 +634,8 @@ EMSCRIPTEN_BINDINGS(RiveText)
 
     function("fontAscent", &fontAscent);
     function("fontDescent", &fontDescent);
+    function("fontCapHeight", &fontCapHeight);
+    function("fontXHeight", &fontXHeight);
     function("convertStringToNumber", &convertStringToNumber);
     function("convertIntToNumber", &convertIntToNumber);
 
@@ -731,6 +753,12 @@ float fontAscent(rive::Font* font) { return font->lineMetrics().ascent; }
 
 EXPORT
 float fontDescent(rive::Font* font) { return font->lineMetrics().descent; }
+
+EXPORT
+float fontCapHeight(rive::Font* font) { return font->lineMetrics().capHeight; }
+
+EXPORT
+float fontXHeight(rive::Font* font) { return font->lineMetrics().xHeight; }
 
 EXPORT
 float convertStringToNumber(char* str)

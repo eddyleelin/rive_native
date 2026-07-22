@@ -269,11 +269,9 @@ bool CommandServer::testing_globalFontContains(std::string name)
 
 CommandServer::CommandServer(rcp<CommandQueue> commandBuffer,
                              Factory* factory,
-                             rcp<rive::FileAssetLoader> internalLoader,
-                             gpu::RenderContext* context) :
+                             rcp<rive::FileAssetLoader> internalLoader) :
     m_commandQueue(std::move(commandBuffer)),
     m_factory(factory),
-    m_context(context),
 #ifndef NDEBUG
     m_threadID(std::this_thread::get_id()),
 #endif
@@ -297,8 +295,15 @@ rive::HitResult CommandServer::pointerDownSynchronized(
                                             pointerEvent);
         {
             std::unique_lock<std::mutex> lock(stateMachine->m_mutex);
-            return stateMachine->instance->pointerDown(pos,
-                                                       pointerEvent.pointerId);
+            auto hitResult =
+                stateMachine->instance->pointerDown(pos,
+                                                    pointerEvent.pointerId);
+            // Process down-driven state changes before a following pointer up.
+            if (hitResult != HitResult::none)
+            {
+                stateMachine->instance->advanceAndApply(0.0f);
+            }
+            return hitResult;
         }
     }
 
@@ -342,8 +347,15 @@ rive::HitResult CommandServer::pointerUpSynchronized(
                                             pointerEvent);
         {
             std::unique_lock<std::mutex> lock(stateMachine->m_mutex);
-            return stateMachine->instance->pointerUp(pos,
-                                                     pointerEvent.pointerId);
+            auto hitResult =
+                stateMachine->instance->pointerUp(pos, pointerEvent.pointerId);
+            // Process up-driven state changes before any following pointer
+            // exit.
+            if (hitResult != HitResult::none)
+            {
+                stateMachine->instance->advanceAndApply(0.0f);
+            }
+            return hitResult;
         }
     }
 
@@ -635,10 +647,7 @@ bool CommandServer::processCommands()
 #ifdef WITH_RIVE_SCRIPTING
                 auto scriptingContext =
                     std::make_unique<CPPRuntimeScriptingContext>(m_factory);
-                if (m_context)
-                {
-                    scriptingContext->setRenderContext(m_context);
-                }
+                scriptingContext->setRenderContext(m_factory);
                 auto vm = make_rcp<ScriptingVM>(std::move(scriptingContext));
                 rcp<rive::File> file = rive::File::import(rivBytes,
                                                           m_factory,
@@ -1874,6 +1883,48 @@ bool CommandServer::processCommands()
                 break;
             }
 
+            case CommandQueue::Command::listFileAssets:
+            {
+                FileHandle handle;
+                uint64_t requestId;
+                commandStream >> handle;
+                commandStream >> requestId;
+                lock.unlock();
+                auto file = getFile(handle);
+                if (file)
+                {
+                    auto fileAssets = file->assets();
+
+                    std::unique_lock<std::mutex> messageLock(
+                        m_commandQueue->m_messageMutex);
+                    messageStream << CommandQueue::Message::fileAssetsListed;
+                    messageStream << handle;
+                    messageStream << requestId;
+                    messageStream << fileAssets.size();
+                    for (const auto& asset : fileAssets)
+                    {
+                        messageStream << asset->assetId();
+                        messageStream << asset->coreType();
+                        m_commandQueue->m_messageNames << asset->name();
+                        m_commandQueue->m_messageNames << asset->cdnUuidStr();
+                        m_commandQueue->m_messageNames << asset->cdnBaseUrl();
+                        m_commandQueue->m_messageNames
+                            << asset->fileExtension();
+                    }
+                }
+                else
+                {
+                    ErrorReporter<FileHandle>(this,
+                                              handle,
+                                              requestId,
+                                              CommandQueue::Message::fileError)
+                        << "Invalid file handle " << handle
+                        << " when getting list of file assets";
+                }
+
+                break;
+            }
+
             case CommandQueue::Command::getViewModelInstanceViewModelName:
             {
                 ViewModelInstanceHandle handle;
@@ -2926,9 +2977,15 @@ bool CommandServer::processCommands()
                         pointerEvent);
                     std::unique_lock<std::mutex> stateMachineLock(
                         stateMachineWrapper->m_mutex);
-                    stateMachineWrapper->instance->pointerDown(
+                    auto hitResult = stateMachineWrapper->instance->pointerDown(
                         position,
                         pointerEvent.pointerId);
+                    // Process down-driven state changes before a following
+                    // pointer up.
+                    if (hitResult != HitResult::none)
+                    {
+                        stateMachineWrapper->instance->advanceAndApply(0.0f);
+                    }
                 }
                 else
                 {
@@ -2959,9 +3016,15 @@ bool CommandServer::processCommands()
                         pointerEvent);
                     std::unique_lock<std::mutex> stateMachineLock(
                         stateMachineWrapper->m_mutex);
-                    stateMachineWrapper->instance->pointerUp(
+                    auto hitResult = stateMachineWrapper->instance->pointerUp(
                         position,
                         pointerEvent.pointerId);
+                    // Process up-driven state changes before any following
+                    // pointer exit.
+                    if (hitResult != HitResult::none)
+                    {
+                        stateMachineWrapper->instance->advanceAndApply(0.0f);
+                    }
                 }
                 else
                 {

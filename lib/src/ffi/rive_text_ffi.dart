@@ -573,6 +573,14 @@ final double Function(Pointer<Void> font) fontDescent = _nativeLib
     .lookup<NativeFunction<Float Function(Pointer<Void>)>>('fontDescent')
     .asFunction();
 
+final double Function(Pointer<Void> font) fontCapHeight = _nativeLib
+    .lookup<NativeFunction<Float Function(Pointer<Void>)>>('fontCapHeight')
+    .asFunction();
+
+final double Function(Pointer<Void> font) fontXHeight = _nativeLib
+    .lookup<NativeFunction<Float Function(Pointer<Void>)>>('fontXHeight')
+    .asFunction();
+
 final double Function(Pointer<Void> string) _convertStringToNumber = _nativeLib
     .lookup<NativeFunction<Float Function(Pointer<Void>)>>(
         'convertStringToNumber')
@@ -794,10 +802,16 @@ class FontFFI extends Font {
 
   double? _ascent;
   double? _descent;
+  double? _capHeight;
+  double? _xHeight;
   @override
   double get ascent => _ascent ??= fontAscent(fontPtr);
   @override
   double get descent => _descent ??= fontDescent(fontPtr);
+  @override
+  double get capHeight => _capHeight ??= fontCapHeight(fontPtr);
+  @override
+  double get xHeight => _xHeight ??= fontXHeight(fontPtr);
 
   static int count = 0;
   FontFFI(this.fontPtr) {

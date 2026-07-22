@@ -100,9 +100,9 @@ public:
         }
 #endif
 
-        // startTimedExecution(state);
+        startTimedExecution(state);
         int ret = lua_pcall(state, nargs, nresults, hpos);
-        // endTimedExecution(state);
+        endTimedExecution(state);
         lua_remove(state, hpos);
 
 #ifdef __EMSCRIPTEN__
@@ -116,9 +116,23 @@ public:
     void printError(lua_State* state) override
     {
         const char* error = lua_tostring(state, -1);
+        bool pushed = false;
+        if (error == nullptr)
+        {
+            // The value on top of the stack isn't a string or number (e.g. a
+            // table, nil, or an error object). luaL_tolstring always yields a
+            // string representation (honoring __tostring) so the user sees a
+            // real message instead of an empty console line.
+            size_t len = 0;
+            error = luaL_tolstring(state, -1, &len);
+            pushed = true;
+        }
         auto parsed = ErrorParser::parse(error);
-
         writeError(parsed);
+        if (pushed)
+        {
+            lua_pop(state, 1); // balance luaL_tolstring's pushed string
+        }
     }
 
     void printBeginLine(lua_State* state) override
@@ -142,9 +156,17 @@ public:
 
         writer.writeVarUint((uint32_t)error.line_number.value_or(0));
 
-        writer.writeVarUint((uint64_t)error.message.size());
-        writer.write((const uint8_t*)error.message.data(),
-                     (size_t)error.message.size());
+        // The reader treats a zero-length span as the span-list terminator,
+        // and printEndLine() writes that terminator below. Only emit the
+        // message as a span when it's non-empty; otherwise a 0-length span
+        // here plus the terminator would write two consecutive zero bytes,
+        // desyncing the reader for every subsequent console entry.
+        if (error.message.size() > 0)
+        {
+            writer.writeVarUint((uint64_t)error.message.size());
+            writer.write((const uint8_t*)error.message.data(),
+                         (size_t)error.message.size());
+        }
         printEndLine();
     }
 

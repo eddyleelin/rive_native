@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:meta/meta.dart';
 import 'package:rive_native/rive_native.dart' as rive;
@@ -94,4 +95,46 @@ base mixin RivePointerEventMixin on rive.RivePainter {
     }
     return inverseViewTransform * rive.Vec2D.fromOffset(position);
   }
+
+  /// Dispatches a Flutter [PointerEvent] to [stateMachine], mapping it to the
+  /// matching state machine pointer call(s) and returning the resulting
+  /// [rive.HitResult].
+  ///
+  /// For touch and stylus pointers, a [PointerUpEvent] or [PointerCancelEvent]
+  /// is followed by a [rive.StateMachine.pointerExit]. These devices have no
+  /// hover state, so once the finger or pen lifts the pointer has left the
+  /// artboard entirely. This keeps enter/exit symmetric on mobile.
+  /// Mouse and trackpad pointers keep hovering after a release, so their exit
+  /// is driven by a real [PointerExitEvent] from the framework instead.
+  @protected
+  rive.HitResult dispatchPointerEvent(
+    rive.StateMachine stateMachine,
+    PointerEvent event,
+    rive.Vec2D position,
+  ) {
+    if (event is PointerDownEvent) {
+      return stateMachine.pointerDown(position, pointerId: event.pointer);
+    } else if (event is PointerUpEvent || event is PointerCancelEvent) {
+      final result = stateMachine.pointerUp(position, pointerId: event.pointer);
+      if (!_pointerExitsOnUp(event.kind)) {
+        return result;
+      }
+      final exitResult =
+          stateMachine.pointerExit(position, pointerId: event.pointer);
+      return exitResult != rive.HitResult.none ? exitResult : result;
+    } else if (event is PointerMoveEvent || event is PointerHoverEvent) {
+      return stateMachine.pointerMove(position, pointerId: event.pointer);
+    } else if (event is PointerExitEvent) {
+      return stateMachine.pointerExit(position, pointerId: event.pointer);
+    }
+    return rive.HitResult.none;
+  }
+
+  /// Whether a pointer up/cancel for [kind] should also synthesize a pointer
+  /// exit. Touch and stylus devices have no persistent hover, so lifting them
+  /// ends the interaction; mouse and trackpad devices keep hovering.
+  static bool _pointerExitsOnUp(PointerDeviceKind kind) =>
+      kind == PointerDeviceKind.touch ||
+      kind == PointerDeviceKind.stylus ||
+      kind == PointerDeviceKind.invertedStylus;
 }

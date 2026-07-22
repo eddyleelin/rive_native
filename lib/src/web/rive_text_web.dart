@@ -27,6 +27,8 @@ late js.JSFunction _deleteLines;
 late js.JSFunction _fontFeatures;
 late js.JSFunction _fontAscent;
 late js.JSFunction _fontDescent;
+late js.JSFunction _fontCapHeight;
+late js.JSFunction _fontXHeight;
 late js.JSFunction _disableFallbackFonts;
 late js.JSFunction _enableFallbackFonts;
 late js.JSFunction _convertStringToNumber;
@@ -56,6 +58,8 @@ class TextEngine {
     _fontFeatures = module['fontFeatures'] as js.JSFunction;
     _fontAscent = module['fontAscent'] as js.JSFunction;
     _fontDescent = module['fontDescent'] as js.JSFunction;
+    _fontCapHeight = module['fontCapHeight'] as js.JSFunction;
+    _fontXHeight = module['fontXHeight'] as js.JSFunction;
     _disableFallbackFonts = module['disableFallbackFonts'] as js.JSFunction;
     _enableFallbackFonts = module['enableFallbackFonts'] as js.JSFunction;
     _convertStringToNumber = module['convertStringToNumber'] as js.JSFunction;
@@ -645,6 +649,16 @@ class FontWasm extends Font {
   @override
   double get descent =>
       (_fontDescent.callAsFunction(null, fontPtr.toJS) as js.JSNumber)
+          .toDartDouble;
+
+  @override
+  double get capHeight =>
+      (_fontCapHeight.callAsFunction(null, fontPtr.toJS) as js.JSNumber)
+          .toDartDouble;
+
+  @override
+  double get xHeight =>
+      (_fontXHeight.callAsFunction(null, fontPtr.toJS) as js.JSNumber)
           .toDartDouble;
 
   @override
