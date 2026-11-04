@@ -52,6 +52,11 @@ public:
     Texture* imageTexture() const { return m_imageTextureRef; }
     ImageSampler imageSampler() const { return m_imageSampler; }
     const IAABB& pixelBounds() const { return m_pixelBounds; }
+    const IAABB& clippedPixelBounds() const { return m_clippedPixelBounds; }
+    const std::optional<IAABB>& clippingPixelBounds() const
+    {
+        return m_clippingPixelBounds;
+    }
     const Mat2D& matrix() const { return m_matrix; }
     BlendMode blendMode() const { return m_blendMode; }
     Type type() const { return m_type; }
@@ -90,9 +95,13 @@ public:
 
     // Clipping setup.
     void setClipID(uint32_t clipID);
-    void setClipRect(const gpu::ClipRectInverseMatrix* m)
+    void setClipRect(const gpu::ClipRectInverseMatrix* m,
+                     IAABB clippingPixelBounds)
     {
         m_clipRectInverseMatrix = m;
+        m_clippingPixelBounds = clippingPixelBounds;
+        m_clippedPixelBounds =
+            m_clippedPixelBounds.intersect(clippingPixelBounds);
     }
 
     void setScissorRect(AABBu16 rect) { m_scissorRect = rect; }
@@ -125,7 +134,7 @@ public:
     const Draw* nextDstRead() const { return m_nextDstRead; }
 
     // Finalizes m_prepassCount and m_subpassCount.
-    virtual void countSubpasses()
+    virtual void countSubpasses(const gpu::PlatformFeatures&)
     {
         // The subclass must set m_prepassCount and m_subpassCount in this call
         // if they are not 0 & 1.
@@ -164,6 +173,8 @@ protected:
     const Mat2D m_matrix;
     const BlendMode m_blendMode;
     const Type m_type;
+    IAABB m_clippedPixelBounds;
+    std::optional<IAABB> m_clippingPixelBounds;
 
     uint32_t m_clipID = 0;
     const gpu::ClipRectInverseMatrix* m_clipRectInverseMatrix = nullptr;
@@ -217,7 +228,7 @@ public:
                               FillRule,
                               const RiveRenderPaint*,
                               float modulatedOpacity,
-                              RawPath* scratchPath);
+                              std::optional<IAABB> pixelBounds = {});
 
     // Determines how coverage is calculated for antialiasing and feathers.
     // CoverageType is mostly decided by the InterlockMode, but we keep these
@@ -229,8 +240,9 @@ public:
         clockwise,         // InterlockMode::clockwise
         clockwiseAtomic,   // InterlockMode::clockwiseAtomic
         msaa,              // InterlockMode::msaa
-        atlas, // Any InterlockMode may opt to use atlas coverage for large
-               // feathers; msaa always has to use an atlas for feathers.
+        featherAtlas, // Any InterlockMode may opt to use atlas coverage for
+                      // large feathers; msaa always has to use an atlas for
+                      // feathers.
     };
 
     PathDraw(IAABB pixelBounds,
@@ -274,12 +286,15 @@ public:
     }
 
     // Only used when rendering coverage via the atlas.
-    const gpu::AtlasTransform& atlasTransform() const
+    const gpu::AtlasTransform& featherAtlasTransform() const
     {
-        return m_atlasTransform;
+        return m_featherAtlasTransform;
     }
-    const AABBu16& atlasScissor() const { return m_atlasScissor; }
-    bool atlasScissorEnabled() const { return m_atlasScissorEnabled; }
+    const AABBu16& featherAtlasScissor() const { return m_featherAtlasScissor; }
+    bool featherAtlasScissorEnabled() const
+    {
+        return m_featherAtlasScissorEnabled;
+    }
 
     // clockwiseAtomic only.
     const gpu::CoverageBufferRange& coverageBufferRange() const
@@ -303,9 +318,23 @@ public:
     }
 
     GrInnerFanTriangulator* triangulator() const { return m_triangulator; }
+    // True if we should output the triangulator's triangles in the opposite
+    // winding direction because the view matrix is left-handed.
+    bool triangulatorReverseTriangles() const
+    {
+        return m_triangulatorReverseTriangles;
+    }
+    // True if the triangulator should negate the Rive winding number when
+    // outputting triangle vertices (because of a left-handed view matrix or
+    // NEGATE_PATH_FILL_COVERAGE_FLAG).
+    bool triangulatorNegateWinding() const
+    {
+        return m_triangulatorNegateWinding;
+    }
+    FillRule triangulatorFillRule() const { return m_triangulatorFillRule; }
 
     bool allocateResources(RenderContext::LogicalFlush*) override;
-    void countSubpasses() override;
+    void countSubpasses(const gpu::PlatformFeatures&) override;
 
     gpu::DrawBatch* pushToRenderContext(RenderContext::LogicalFlush*,
                                         int subpassIndex) override;
@@ -315,9 +344,9 @@ public:
     // is where we emit the rectangle that reads the atlas (and writes to the
     // main render target). So this method is where we push the tessellation
     // that gets rendered separately to the offscreen atlas.
-    void pushAtlasTessellation(RenderContext::LogicalFlush*,
-                               uint32_t* tessVertexCount,
-                               uint32_t* tessBaseVertex);
+    void pushFeatherAtlasTessellation(RenderContext::LogicalFlush*,
+                                      uint32_t* tessVertexCount,
+                                      uint32_t* tessBaseVertex);
 
     void releaseRefs() override;
 
@@ -339,9 +368,7 @@ protected:
 
     // Prepares to draw the path by triangulating the interior into
     // non-overlapping triangles and tessellating the outer cubics.
-    void initForInteriorTriangulation(RenderContext*,
-                                      RawPath*,
-                                      TriangulatorAxis);
+    void initForInteriorTriangulation(RenderContext*, TriangulatorAxis);
 
     uint32_t allocateTessellationVertices(RenderContext::LogicalFlush* flush,
                                           uint32_t tessVertexCount)
@@ -398,7 +425,6 @@ protected:
     // about ~5% of the total CPU time. (And large paths are GPU-bound anyway.)
     void iterateInteriorTriangulation(InteriorTriangulationOp op,
                                       TrivialBlockAllocator*,
-                                      RawPath* scratchPath,
                                       TriangulatorAxis,
                                       RenderContext::TessellationWriter*);
 
@@ -412,15 +438,18 @@ protected:
     gpu::ContourDirections m_contourDirections;
     uint32_t m_contourFlags = 0;
 
-    // Only used when rendering coverage via the atlas.
-    gpu::AtlasTransform m_atlasTransform;
-    AABBu16 m_atlasScissor; // Scissor rect when rendering to the atlas.
-    bool m_atlasScissorEnabled;
+    // Only used when rendering coverage via the feather atlas.
+    gpu::AtlasTransform m_featherAtlasTransform;
+    AABBu16 m_featherAtlasScissor; // Scissor rect when rendering to the atlas.
+    bool m_featherAtlasScissorEnabled;
 
     // clockwiseAtomic only.
     gpu::CoverageBufferRange m_coverageBufferRange;
 
     GrInnerFanTriangulator* m_triangulator = nullptr;
+    FillRule m_triangulatorFillRule = FillRule::nonZero;
+    bool m_triangulatorReverseTriangles = false;
+    bool m_triangulatorNegateWinding = false;
 
     StrokeJoin m_strokeJoin;
     StrokeCap m_strokeCap;

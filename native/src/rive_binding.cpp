@@ -32,6 +32,7 @@
 #include "rive/viewmodel/viewmodel_instance_trigger.hpp"
 #include "rive/viewmodel/viewmodel_instance_symbol_list_index.hpp"
 #include "rive/viewmodel/viewmodel_instance_asset_image.hpp"
+#include "rive/viewmodel/viewmodel_instance_asset_font.hpp"
 #include "rive/viewmodel/viewmodel_property_enum.hpp"
 #include "rive/viewmodel/viewmodel_property_enum_custom.hpp"
 #include "rive/math/transform_components.hpp"
@@ -99,6 +100,7 @@ static void writeInt64(rive::VectorBinaryWriter& writer, int64_t value)
 #include <limits>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 using namespace rive;
 
@@ -711,6 +713,8 @@ using WrappedVMITriggerRuntime =
     WrappedVMIValueRuntime<ViewModelInstanceTriggerRuntime>;
 using WrappedVMIAssetImageRuntime =
     WrappedVMIValueRuntime<ViewModelInstanceAssetImageRuntime>;
+using WrappedVMIAssetFontRuntime =
+    WrappedVMIValueRuntime<ViewModelInstanceAssetFontRuntime>;
 using WrappedVMIListRuntime =
     WrappedVMIValueRuntime<ViewModelInstanceListRuntime>;
 using WrappedVMIArtboardRuntime =
@@ -1749,6 +1753,39 @@ EXPORT void setVMIAssetImageRuntimeValue(
     wrappedAssetImageProperty->instance()->value(value);
 }
 
+EXPORT WrappedVMIAssetFontRuntime* vmiRuntimeGetAssetFontProperty(
+    WrappedVMIRuntime* wrappedViewModelInstance,
+    const char* path)
+{
+    if (wrappedViewModelInstance == nullptr)
+    {
+        return nullptr;
+    }
+    auto viewModelInstance = wrappedViewModelInstance->instance();
+    if (viewModelInstance == nullptr)
+    {
+        return nullptr;
+    }
+    auto fontProperty = viewModelInstance->propertyFont(path);
+    if (fontProperty == nullptr)
+    {
+        return nullptr;
+    }
+    return new WrappedVMIAssetFontRuntime(ref_rcp(wrappedViewModelInstance),
+                                          fontProperty);
+}
+
+EXPORT void setVMIAssetFontRuntimeValue(
+    WrappedVMIAssetFontRuntime* wrappedAssetFontProperty,
+    Font* value)
+{
+    if (wrappedAssetFontProperty == nullptr)
+    {
+        return;
+    }
+    wrappedAssetFontProperty->instance()->value(value);
+}
+
 EXPORT WrappedVMIListRuntime* vmiRuntimeGetListProperty(
     WrappedVMIRuntime* wrappedViewModelInstance,
     const char* path)
@@ -2000,6 +2037,34 @@ EXPORT void deleteDataContext(DataContext* dataContext)
     dataContext->unref();
 }
 
+EXPORT DataContext* riveDataContextFromInstances(File* file,
+                                                 SizeType* viewModelIndices,
+                                                 SizeType* instanceIndices,
+                                                 SizeType count)
+{
+    if (file == nullptr || count == 0)
+    {
+        return nullptr;
+    }
+    std::vector<rcp<ViewModelInstance>> instances;
+    instances.reserve(count);
+    for (SizeType i = 0; i < count; i++)
+    {
+        auto instance = file->createViewModelInstance(viewModelIndices[i],
+                                                      instanceIndices[i]);
+        if (instance != nullptr)
+        {
+            instances.push_back(std::move(instance));
+        }
+    }
+    if (instances.empty())
+    {
+        return nullptr;
+    }
+    auto dataContext = new DataContext(std::move(instances));
+    return dataContext;
+}
+
 EXPORT ViewModelInstance* riveDataContextViewModelInstance(
     DataContext* dataContext)
 {
@@ -2007,8 +2072,58 @@ EXPORT ViewModelInstance* riveDataContextViewModelInstance(
     {
         return nullptr;
     }
-    rcp<ViewModelInstance> vmi = dataContext->viewModelInstance();
+    rcp<ViewModelInstance> vmi = dataContext->mainViewModelInstance();
     return vmi.release();
+}
+
+EXPORT ViewModelInstance* dataContextViewModelInstanceAt(
+    DataContext* dataContext,
+    SizeType index)
+{
+    if (dataContext == nullptr)
+    {
+        return nullptr;
+    }
+    auto& instances = dataContext->viewModelInstances();
+    if (index >= instances.size())
+    {
+        return nullptr;
+    }
+    rcp<ViewModelInstance> vmi = instances[index];
+    return vmi.release();
+}
+
+// Creates a DataContext from existing native ViewModelInstance pointers.
+// Each instance is ref'd so the DataContext shares ownership with the caller.
+// If parentDataContext is non-null it becomes the new context's parent.
+EXPORT DataContext* dataContextFromViewModelInstancePointers(
+    ViewModelInstance** instances,
+    SizeType count,
+    DataContext* parentDataContext)
+{
+    if (instances == nullptr || count == 0)
+    {
+        return nullptr;
+    }
+    std::vector<rcp<ViewModelInstance>> vec;
+    vec.reserve(count);
+    for (SizeType i = 0; i < count; i++)
+    {
+        if (instances[i] != nullptr)
+        {
+            vec.push_back(ref_rcp(instances[i]));
+        }
+    }
+    if (vec.empty())
+    {
+        return nullptr;
+    }
+    auto dataContext = new DataContext(std::move(vec));
+    if (parentDataContext != nullptr)
+    {
+        dataContext->parent(ref_rcp(parentDataContext));
+    }
+    return dataContext;
 }
 
 EXPORT ViewModelInstance* copyViewModelInstance(File* file,
@@ -2190,6 +2305,42 @@ EXPORT ViewModelInstanceValue* viewModelInstancePropertyValue(
     return ref_rcp(result).release();
 }
 
+// Prunes a view model instance down to only the property ids in keepIds,
+// removing every other property value. Used to turn a full editor-time copy of
+// a nested-artboard override instance into a sparse instance that contains only
+// the explicitly-overridden properties, so data-context resolution falls
+// through to the parent context for non-overridden properties. The keep ids are
+// runtime property ids (matching ViewModelInstanceValue::viewModelPropertyId).
+EXPORT void pruneViewModelInstanceToProperties(
+    ViewModelInstance* viewModelInstance,
+    const uint32_t* keepIds,
+    SizeType keepCount)
+{
+    if (viewModelInstance == nullptr)
+    {
+        return;
+    }
+    std::unordered_set<uint32_t> keep;
+    for (SizeType i = 0; i < keepCount; i++)
+    {
+        keep.insert(keepIds[i]);
+    }
+    // Snapshot the ids to remove first; removeValue mutates m_PropertyValues.
+    std::vector<uint32_t> toRemove;
+    for (auto& value : viewModelInstance->propertyValues())
+    {
+        auto id = value->viewModelPropertyId();
+        if (keep.find(id) == keep.end())
+        {
+            toRemove.push_back(id);
+        }
+    }
+    for (auto id : toRemove)
+    {
+        viewModelInstance->removeValue(id);
+    }
+}
+
 EXPORT void deleteViewModelInstance(ViewModelInstance* viewModelInstance)
 {
     std::unique_lock<std::mutex> lock(g_deleteMutex);
@@ -2297,12 +2448,12 @@ EXPORT void setViewModelInstanceAssetValue(
     uint32_t value)
 {
     if (viewModelInstanceValue == nullptr ||
-        !viewModelInstanceValue->is<ViewModelInstanceAssetImage>())
+        !viewModelInstanceValue->is<ViewModelInstanceAsset>())
     {
         return;
     }
     auto viewModelInstanceAsset =
-        viewModelInstanceValue->as<ViewModelInstanceAssetImage>();
+        viewModelInstanceValue->as<ViewModelInstanceAsset>();
     viewModelInstanceAsset->propertyValue(value);
 }
 
@@ -2347,6 +2498,48 @@ EXPORT uint32_t viewModelInstanceAssetImageResolveRuntimeIndex(
     return assetImageResolveRuntimeIndex(
         file,
         viewModelInstanceValue->as<ViewModelInstanceAssetImage>());
+}
+
+uint32_t assetFontResolveRuntimeIndex(File* file,
+                                      ViewModelInstanceAssetFont* vmi)
+{
+    if (file == nullptr || vmi == nullptr)
+    {
+        return std::numeric_limits<uint32_t>::max();
+    }
+    Font* font = vmi->asset()->font().get();
+    if (font == nullptr)
+    {
+        return std::numeric_limits<uint32_t>::max();
+    }
+    auto span = file->assets();
+    for (size_t i = 0; i < span.size(); ++i)
+    {
+        FileAsset* fa = span[i].get();
+        if (fa != nullptr && fa->is<FontAsset>())
+        {
+            auto faFont = fa->as<FontAsset>();
+            if (faFont->font().get() == font)
+            {
+                return static_cast<uint32_t>(i);
+            }
+        }
+    }
+    return std::numeric_limits<uint32_t>::max();
+}
+
+EXPORT uint32_t viewModelInstanceAssetFontResolveRuntimeIndex(
+    File* file,
+    ViewModelInstanceValue* viewModelInstanceValue)
+{
+    if (file == nullptr || viewModelInstanceValue == nullptr ||
+        !viewModelInstanceValue->is<ViewModelInstanceAssetFont>())
+    {
+        return std::numeric_limits<uint32_t>::max();
+    }
+    return assetFontResolveRuntimeIndex(
+        file,
+        viewModelInstanceValue->as<ViewModelInstanceAssetFont>());
 }
 
 EXPORT void setViewModelInstanceBooleanValue(
@@ -2600,6 +2793,12 @@ static void serializeViewModelInstanceValue(ViewModelInstanceValue* value,
     else if (value->is<ViewModelInstanceAssetImage>())
     {
         auto assetValue = value->as<ViewModelInstanceAssetImage>();
+        writer.write(propertyType);
+        writer.writeVarUint(static_cast<uint32_t>(assetValue->propertyValue()));
+    }
+    else if (value->is<ViewModelInstanceAssetFont>())
+    {
+        auto assetValue = value->as<ViewModelInstanceAssetFont>();
         writer.write(propertyType);
         writer.writeVarUint(static_cast<uint32_t>(assetValue->propertyValue()));
     }
@@ -3139,6 +3338,49 @@ EXPORT bool artboardGetFrameOrigin(WrappedArtboard* wrappedArtboard)
     return wrappedArtboard->artboard()->frameOrigin();
 }
 
+// Origin override: a ComponentOrigin child of a nested artboard replaces the
+// mounted artboard instance's own origin, mirroring the C++ runtime's
+// NestedArtboard::applyOriginOverride.
+EXPORT float riveArtboardGetOriginX(WrappedArtboard* wrappedArtboard)
+{
+    if (wrappedArtboard == nullptr)
+    {
+        return 0.0f;
+    }
+    return wrappedArtboard->artboard()->originX();
+}
+
+EXPORT void riveArtboardSetOriginX(WrappedArtboard* wrappedArtboard,
+                                   float value)
+{
+    if (wrappedArtboard == nullptr)
+    {
+        return;
+    }
+    auto artboard = wrappedArtboard->artboard();
+    artboard->originX(value);
+}
+
+EXPORT float riveArtboardGetOriginY(WrappedArtboard* wrappedArtboard)
+{
+    if (wrappedArtboard == nullptr)
+    {
+        return 0.0f;
+    }
+    return wrappedArtboard->artboard()->originY();
+}
+
+EXPORT void riveArtboardSetOriginY(WrappedArtboard* wrappedArtboard,
+                                   float value)
+{
+    if (wrappedArtboard == nullptr)
+    {
+        return;
+    }
+    auto artboard = wrappedArtboard->artboard();
+    artboard->originY(value);
+}
+
 EXPORT const char* animationInstanceName(
     WrappedLinearAnimation* wrappedAnimation)
 {
@@ -3606,6 +3848,16 @@ EXPORT void riveArtboardSetOpacity(WrappedArtboard* wrappedArtboard,
         return;
     }
     return wrappedArtboard->artboard()->opacity(opacity);
+}
+
+EXPORT void riveArtboardSetHostOpacity(WrappedArtboard* wrappedArtboard,
+                                       float hostOpacity)
+{
+    if (wrappedArtboard == nullptr)
+    {
+        return;
+    }
+    return wrappedArtboard->artboard()->hostOpacity(hostOpacity);
 }
 
 EXPORT float riveArtboardGetWidth(WrappedArtboard* wrappedArtboard)
@@ -6384,6 +6636,24 @@ EXPORT void rawTextSelectWord(RawTextInput* rawTextInput)
     rawTextInput->selectWord();
 }
 
+EXPORT bool rawTextHasSelection(RawTextInput* rawTextInput)
+{
+    if (rawTextInput == nullptr)
+    {
+        return false;
+    }
+    return rawTextInput->cursor().hasSelection();
+}
+
+EXPORT void rawTextClearSelection(RawTextInput* rawTextInput)
+{
+    if (rawTextInput == nullptr)
+    {
+        return;
+    }
+    rawTextInput->clearSelection();
+}
+
 EXPORT void rawTextUndo(RawTextInput* rawTextInput)
 {
     if (rawTextInput == nullptr)
@@ -6724,14 +6994,16 @@ struct FocusBoundsResult
 };
 
 /// Get the world bounds of the primary focus (WASM version).
-/// Returns a struct with valid flag and bounds.
-EXPORT FocusBoundsResult focusManagerGetPrimaryFocusBounds(void* manager)
+/// Returns a struct with valid flag and bounds. Takes WasmPtr, embind can
+/// never bind a void* parameter and throws UnboundTypeError at call time.
+EXPORT FocusBoundsResult focusManagerGetPrimaryFocusBounds(WasmPtr managerPtr)
 {
+    auto* manager = reinterpret_cast<rive::FocusManager*>(managerPtr);
     FocusBoundsResult result = {0, 0, 0, 0, 0};
     if (manager == nullptr)
         return result;
     rive::AABB bounds;
-    if (!static_cast<rive::FocusManager*>(manager)->primaryFocusBounds(bounds))
+    if (!manager->primaryFocusBounds(bounds))
     {
         return result;
     }
@@ -6890,6 +7162,16 @@ EXPORT void focusManagerRemoveChild(void* manager, void* child)
     focusManager->removeChild(childNode);
 }
 
+EXPORT void focusManagerDetachChild(void* manager, void* child)
+{
+    if (manager == nullptr || child == nullptr)
+        return;
+    auto* focusManager = static_cast<rive::FocusManager*>(manager);
+    rive::rcp<rive::FocusNode> childNode =
+        rive::ref_rcp(static_cast<DartFocusNode*>(child));
+    focusManager->detachChild(childNode);
+}
+
 // FocusManager - traversal
 EXPORT bool focusManagerFocusNext(void* manager)
 {
@@ -6955,42 +7237,6 @@ EXPORT bool focusManagerTextInput(void* manager, const char* text)
     if (manager == nullptr || text == nullptr)
         return false;
     return static_cast<rive::FocusManager*>(manager)->textInput(text);
-}
-
-#ifdef WITH_RIVE_TOOLS
-using FocusChangedCallback = void (*)();
-EXPORT void focusManagerSetFocusChangedCallback(void* manager,
-                                                FocusChangedCallback callback)
-{
-    if (manager == nullptr)
-        return;
-    static_cast<rive::FocusManager*>(manager)->setFocusChangedCallback(
-        callback);
-}
-
-// Callback for scroll-into-view requests from Dart-mounted artboards.
-// Parameters passed to Dart:
-// - minX, minY, maxX, maxY: world bounds of the focused element
-// - rootArtboard: pointer to the root artboard (host == null)
-using ScrollIntoViewCallback = void (*)(float minX,
-                                        float minY,
-                                        float maxX,
-                                        float maxY,
-                                        void* rootArtboard);
-
-// Static thunk that converts AABB to individual floats for Dart FFI
-static ScrollIntoViewCallback g_scrollIntoViewCallback = nullptr;
-static void scrollIntoViewThunk(const rive::AABB& bounds,
-                                rive::Artboard* rootArtboard)
-{
-    if (g_scrollIntoViewCallback)
-    {
-        g_scrollIntoViewCallback(bounds.minX,
-                                 bounds.minY,
-                                 bounds.maxX,
-                                 bounds.maxY,
-                                 static_cast<void*>(rootArtboard));
-    }
 }
 
 #if defined(__EMSCRIPTEN__)
@@ -7101,7 +7347,45 @@ static void disposeFocusNodeWasm(WasmPtr nodePtr)
     g_focusNodeCallbacksWasm.erase(static_cast<void*>(node));
     node->unref();
 }
+#endif
 
+#ifdef WITH_RIVE_TOOLS
+using FocusChangedCallback = void (*)();
+EXPORT void focusManagerSetFocusChangedCallback(void* manager,
+                                                FocusChangedCallback callback)
+{
+    if (manager == nullptr)
+        return;
+    static_cast<rive::FocusManager*>(manager)->setFocusChangedCallback(
+        callback);
+}
+
+// Callback for scroll-into-view requests from Dart-mounted artboards.
+// Parameters passed to Dart:
+// - minX, minY, maxX, maxY: world bounds of the focused element
+// - rootArtboard: pointer to the root artboard (host == null)
+using ScrollIntoViewCallback = void (*)(float minX,
+                                        float minY,
+                                        float maxX,
+                                        float maxY,
+                                        void* rootArtboard);
+
+// Static thunk that converts AABB to individual floats for Dart FFI
+static ScrollIntoViewCallback g_scrollIntoViewCallback = nullptr;
+static void scrollIntoViewThunk(const rive::AABB& bounds,
+                                rive::Artboard* rootArtboard)
+{
+    if (g_scrollIntoViewCallback)
+    {
+        g_scrollIntoViewCallback(bounds.minX,
+                                 bounds.minY,
+                                 bounds.maxX,
+                                 bounds.maxY,
+                                 static_cast<void*>(rootArtboard));
+    }
+}
+
+#if defined(__EMSCRIPTEN__)
 // =============================================================================
 // WASM FocusManager callbacks
 // =============================================================================
@@ -7635,8 +7919,7 @@ EMSCRIPTEN_BINDINGS(RiveBinding)
     function("setArtboardRootTransformCallback",
              &setArtboardRootTransformCallback);
     function("artboardGetAllTextRuns", &artboardGetAllTextRuns);
-#ifdef WITH_RIVE_TOOLS
-    // Profiler functions
+    // Profiler functions (stubs unless built with RIVE_MICROPROFILE)
     function("profilerStart", &profilerStart);
     function("profilerStop", &profilerStop);
     function("profilerIsActive", &profilerIsActive);
@@ -7656,16 +7939,8 @@ EMSCRIPTEN_BINDINGS(RiveBinding)
     function("makeFocusNodeWasm", &makeFocusNodeWasm);
     function("disposeFocusNodeWasm", &disposeFocusNodeWasm);
 
-    // FocusManager functions that need EMSCRIPTEN_BINDINGS
-    // (callback takes emscripten::val, bounds returns value_object struct)
-
-    function("focusManagerSetFocusChangedCallback",
-             &focusManagerSetFocusChangedCallbackWasm);
-    function("focusManagerSetScrollIntoViewCallback",
-             &focusManagerSetScrollIntoViewCallback);
     function("focusManagerGetPrimaryFocusBounds",
-             &focusManagerGetPrimaryFocusBounds,
-             allow_raw_pointers());
+             &focusManagerGetPrimaryFocusBounds);
 
     // FocusBoundsResult struct for WASM (used by
     // focusManagerGetPrimaryFocusBounds)
@@ -7675,6 +7950,14 @@ EMSCRIPTEN_BINDINGS(RiveBinding)
         .field("minY", &FocusBoundsResult::minY)
         .field("maxX", &FocusBoundsResult::maxX)
         .field("maxY", &FocusBoundsResult::maxY);
+
+#ifdef WITH_RIVE_TOOLS
+    // FocusManager callbacks — the runtime's setFocusChangedCallback /
+    // setScrollIntoViewCallback only exist WITH_RIVE_TOOLS.
+    function("focusManagerSetFocusChangedCallback",
+             &focusManagerSetFocusChangedCallbackWasm);
+    function("focusManagerSetScrollIntoViewCallback",
+             &focusManagerSetScrollIntoViewCallback);
 #endif
 
     value_object<TextRunArrayResult>("TextRunArrayResult")

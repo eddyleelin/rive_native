@@ -285,6 +285,16 @@ final void Function(Pointer<Void> manager, Pointer<Void> child)
                 )>>('focusManagerRemoveChild')
         .asFunction();
 
+final void Function(Pointer<Void> manager, Pointer<Void> child)
+    _focusManagerDetachChild = nativeLib
+        .lookup<
+            NativeFunction<
+                Void Function(
+                  Pointer<Void>,
+                  Pointer<Void>,
+                )>>('focusManagerDetachChild')
+        .asFunction();
+
 // FocusManager - traversal
 final bool Function(Pointer<Void> manager) _focusManagerFocusNext = nativeLib
     .lookup<NativeFunction<Bool Function(Pointer<Void>)>>(
@@ -695,6 +705,14 @@ final class FocusManagerFFI implements focus.FocusManager, Finalizable {
     );
   }
 
+  @override
+  void detachChild(focus.FocusNode child) {
+    _focusManagerDetachChild(
+      _pointer,
+      _getPointer(child)!,
+    );
+  }
+
   /// Get the native pointer from a FocusNode (either FocusNodeFFI or
   /// NativeFocusNodeWrapper).
   static Pointer<Void>? _getPointer(focus.FocusNode? node) {
@@ -896,6 +914,14 @@ final class NativeFocusManagerWrapper implements focus.FocusManager {
   @override
   void removeChild(focus.FocusNode child) {
     _focusManagerRemoveChild(
+      _pointer,
+      FocusManagerFFI._getPointer(child)!,
+    );
+  }
+
+  @override
+  void detachChild(focus.FocusNode child) {
+    _focusManagerDetachChild(
       _pointer,
       FocusManagerFFI._getPointer(child)!,
     );

@@ -283,6 +283,14 @@ RiveNativePlugin::RiveNativePlugin(
 
 RiveNativePlugin::~RiveNativePlugin()
 {
+    // Engine shutdown: async unregister callbacks would never run, so delete
+    // synchronously to join each fence thread before the registrar dies.
+    for (auto& [id, renderTexture] : m_renderTextures)
+    {
+        m_textureRegistrar->UnregisterTexture(id);
+        delete renderTexture;
+    }
+    m_renderTextures.clear();
     if (m_riveRendererContext != nullptr)
     {
         destroyRiveRendererContext(m_riveRendererContext);
@@ -386,8 +394,11 @@ void RiveNativePlugin::HandleMethodCall(
         {
             auto renderTexture = itr->second;
             m_renderTextures.erase(itr);
-            m_textureRegistrar->UnregisterTexture(renderTexture->id());
-            delete renderTexture;
+            // Unregistration completes asynchronously; deleting sooner would
+            // free the texture variant while the engine can still touch it.
+            m_textureRegistrar->UnregisterTexture(
+                renderTexture->id(),
+                [renderTexture] { delete renderTexture; });
         }
         result->Success();
     }

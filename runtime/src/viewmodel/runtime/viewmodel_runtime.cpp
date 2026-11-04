@@ -2,6 +2,7 @@
 #include "rive/viewmodel/runtime/viewmodel_runtime.hpp"
 #include "rive/viewmodel/viewmodel.hpp"
 #include "rive/viewmodel/viewmodel_property_asset_image.hpp"
+#include "rive/viewmodel/viewmodel_property_asset_font.hpp"
 #include "rive/viewmodel/viewmodel_property_string.hpp"
 #include "rive/viewmodel/viewmodel_property_number.hpp"
 #include "rive/viewmodel/viewmodel_property_boolean.hpp"
@@ -46,6 +47,7 @@ std::vector<PropertyData> ViewModelRuntime::buildPropertiesData(
     for (auto property : properties)
     {
         DataType type = DataType::none;
+        std::string enumName;
         switch (property->coreType())
         {
             case ViewModelPropertyString::typeKey:
@@ -66,8 +68,16 @@ std::vector<PropertyData> ViewModelRuntime::buildPropertiesData(
             case ViewModelPropertyEnum::typeKey:
             case ViewModelPropertyEnumCustomBase::typeKey:
             case ViewModelPropertyEnumSystemBase::typeKey:
+            {
                 type = DataType::enumType;
+                auto* dataEnum =
+                    static_cast<ViewModelPropertyEnum*>(property)->dataEnum();
+                if (dataEnum != nullptr)
+                {
+                    enumName = dataEnum->enumName();
+                }
                 break;
+            }
             case ViewModelPropertyTrigger::typeKey:
                 type = DataType::trigger;
                 break;
@@ -80,13 +90,16 @@ std::vector<PropertyData> ViewModelRuntime::buildPropertiesData(
             case ViewModelPropertyAssetImage::typeKey:
                 type = DataType::assetImage;
                 break;
+            case ViewModelPropertyAssetFont::typeKey:
+                type = DataType::assetFont;
+                break;
             case ViewModelPropertyArtboard::typeKey:
                 type = DataType::artboard;
                 break;
             default:
                 break;
         }
-        props.push_back({type, property->name()});
+        props.push_back({type, property->name(), enumName});
     }
     return props;
 }

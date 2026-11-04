@@ -47,6 +47,7 @@ class KeyedProperty;
 class EventReport;
 class DataBind;
 class BindableProperty;
+class StateInstance;
 class HitDrawable;
 class ListenerViewModel;
 class ScriptedListenerAction;
@@ -90,6 +91,10 @@ private:
         StateMachineLayerInstance* layerInstance);
 
     rcp<DataContext> m_DataContext = nullptr;
+    // Ensures the current data context holds an instance for the artboard's
+    // main view model and for every global view model in the file, creating
+    // (completing) any that are missing before the context is applied.
+    void completeViewModelInstances();
     void addToHitLookup(Component* target,
                         bool isLayoutComponent,
                         std::unordered_map<Component*, HitDrawable*>& hitLookup,
@@ -124,7 +129,24 @@ public:
     SMITrigger* getTrigger(const std::string& name) const override;
     void bindViewModelInstance(
         rcp<ViewModelInstance> viewModelInstance) override;
+    // Sets the main (non-global) view model instance in the data context
+    // without rebinding. Call bind() to apply. A global instance is routed to
+    // setGlobalViewModelInstance.
+    void setViewModelInstance(rcp<ViewModelInstance> viewModelInstance);
+    // Sets/replaces the global view model instance bound under the given global
+    // view model name without rebinding, preserving the main instance and the
+    // other globals' order. Returns false if the name does not match the
+    // instance's global view model. Call bind() to apply.
+    bool setGlobalViewModelInstance(const std::string& name,
+                                    rcp<ViewModelInstance> viewModelInstance);
+    // Applies the current data context: rebinds artboard + state machine data
+    // binds in a single pass. No-op if nothing has been set.
+    void bind();
+    // @returns the global view model instance currently bound under the given
+    // name, or nullptr if none has been set. Never creates.
+    rcp<ViewModelInstance> globalViewModelInstance(const std::string& name);
     void bindDataContext(rcp<DataContext> dataContext);
+    void inheritDataContext(rcp<DataContext> dataContext);
     void dataContext(rcp<DataContext> dataContext);
     rcp<DataContext> dataContext() const { return m_DataContext; }
     void rebind() override;
@@ -142,6 +164,11 @@ public:
     const LayerState* stateChangedByIndex(size_t index) const;
 
     bool advanceAndApply(float secs) override;
+    // When advanceViewModels is false, skips consuming/advancing the bound and
+    // detached view model instances (used when a script drives a nested
+    // scripted artboard, whose view models are advanced by the host frame
+    // instead). Animation and artboard component reset still run.
+    bool advanceAndApply(float secs, bool advanceViewModels);
     void advancedDataContext();
     void reset();
     std::string name() const override;
@@ -214,6 +241,19 @@ public:
     BindablePropertyNumber* findTransitionPropertyInstance(
         const StateTransition* transition,
         uint32_t propertyKey) const;
+
+    /// Builds keyframe-value data binds for every LinearAnimationInstance the
+    /// given state instance drives: clones each keyframe-targeting DataBind
+    /// from the source artboard, creates a per-LAI holder for the keyframe
+    /// value, reroutes the clone to the holder, and adds it to this state
+    /// machine's data bind container so it advances each frame. No-op for
+    /// states without bound keyframes. Called when a state instance is created.
+    void buildStateKeyFrameBinds(StateInstance* stateInstance);
+    /// Removes and deletes the keyframe-value data binds created for the given
+    /// state instance. Called before the state instance (and its LAIs/holders)
+    /// are destroyed.
+    void removeStateKeyFrameBinds(StateInstance* stateInstance);
+
     bool hasListeners() { return m_hitComponents.size() > 0; }
     bool hasFocusNodes();
     bool focusNext();
@@ -239,6 +279,14 @@ public:
     /// Get the focus manager for this state machine instance.
     /// Returns the external focus manager if set, otherwise the internal one.
     FocusManager* focusManager()
+    {
+        return m_externalFocusManager ? m_externalFocusManager
+                                      : &m_focusManager;
+    }
+
+    /// Const overload of [focusManager], used by read-only consumers such as
+    /// condition evaluation.
+    const FocusManager* focusManager() const
     {
         return m_externalFocusManager ? m_externalFocusManager
                                       : &m_focusManager;
@@ -335,6 +383,9 @@ public:
 private:
     std::vector<EventReport> m_reportedEvents;
     std::vector<EventReport> m_reportingEvents;
+    // Events first reported inside the applyEvents loop; kept host visible
+    // until the next applyEvents so hosts see them exactly once.
+    std::vector<EventReport> m_eventsAppliedDuringLoop;
     const StateMachine* m_machine;
     bool m_needsAdvance = false;
     std::vector<SMIInput*> m_inputInstances; // we own each pointer
@@ -362,6 +413,12 @@ private:
     std::unordered_map<const Core*,
                        std::unordered_map<uint32_t, BindablePropertyNumber*>>
         m_transitionPropertyInstances;
+    /// Keyframe-value data binds cloned per state instance, keyed by the
+    /// StateInstance whose LinearAnimationInstance(s) own the target holders.
+    /// Owned by this state machine's data bind container; built when a state
+    /// instance is created and removed+deleted when it is destroyed.
+    std::unordered_map<StateInstance*, std::vector<DataBind*>>
+        m_stateKeyFrameDataBinds;
     uint8_t m_drawOrderChangeCounter = 0;
     void unbind();
     void removeEventListeners();

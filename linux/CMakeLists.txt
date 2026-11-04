@@ -93,11 +93,12 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE
   rust_ffi
   brotli
   spirv_cross
+  rive_pathops
   -Wl,--end-group
 )
 
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
-target_link_libraries(${PLUGIN_NAME} PRIVATE GL dl)
+target_link_libraries(${PLUGIN_NAME} PRIVATE GL EGL dl)
 
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an

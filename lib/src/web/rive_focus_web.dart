@@ -39,6 +39,7 @@ late js.JSFunction _focusManagerHasFocus;
 late js.JSFunction _focusManagerHasPrimaryFocus;
 late js.JSFunction _focusManagerAddChild;
 late js.JSFunction _focusManagerRemoveChild;
+late js.JSFunction _focusManagerDetachChild;
 late js.JSFunction _focusManagerFocusNext;
 late js.JSFunction _focusManagerFocusPrevious;
 late js.JSFunction _focusManagerFocusLeft;
@@ -383,6 +384,18 @@ class NativeFocusManagerWasmWrapper implements focus.FocusManager {
   }
 
   @override
+  void detachChild(focus.FocusNode child) {
+    final childPtr = _getNodePointer(child);
+    if (childPtr != null) {
+      _focusManagerDetachChild.callAsFunction(
+        null,
+        nativePtr.toJS,
+        childPtr.toJS,
+      );
+    }
+  }
+
+  @override
   bool focusNext() {
     return _wasmBool(
         _focusManagerFocusNext.callAsFunction(null, nativePtr.toJS));
@@ -630,6 +643,18 @@ class FocusManagerWasm implements focus.FocusManager {
   }
 
   @override
+  void detachChild(focus.FocusNode child) {
+    final childPtr = _getNodePointer(child);
+    if (childPtr != null) {
+      _focusManagerDetachChild.callAsFunction(
+        null,
+        nativePtr.toJS,
+        childPtr.toJS,
+      );
+    }
+  }
+
+  @override
   bool focusNext() {
     return _wasmBool(
         _focusManagerFocusNext.callAsFunction(null, nativePtr.toJS));
@@ -793,6 +818,8 @@ class FocusManagerWasm implements focus.FocusManager {
     _focusManagerAddChild = module['_focusManagerAddChild'] as js.JSFunction;
     _focusManagerRemoveChild =
         module['_focusManagerRemoveChild'] as js.JSFunction;
+    _focusManagerDetachChild =
+        module['_focusManagerDetachChild'] as js.JSFunction;
     _focusManagerFocusNext = module['_focusManagerFocusNext'] as js.JSFunction;
     _focusManagerFocusPrevious =
         module['_focusManagerFocusPrevious'] as js.JSFunction;

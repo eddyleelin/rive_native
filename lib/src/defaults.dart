@@ -17,4 +17,7 @@ abstract class RiveDefaults {
 
   /// The default [MouseCursor] for Rive listeners.
   static const mouseCursor = MouseCursor.defer;
+
+  /// The default [RenderResolution] for Rive widgets.
+  static const renderResolution = RenderResolution.defaultValue;
 }

@@ -10,6 +10,7 @@ import 'package:rive_native/rive_native.dart';
 import 'src/rive_native_ffi.dart'
     if (dart.library.js_interop) 'src/rive_native_web.dart';
 
+export 'src/render_resolution.dart';
 export 'src/rive.dart' hide RiveProfiler;
 export 'src/rive_renderer.dart';
 export 'package:rive_native/math.dart';
@@ -119,7 +120,11 @@ abstract base class RenderTexturePainter extends RivePainter {
 abstract base class RenderTexture {
   int get textureId;
   dynamic get nativeTexture;
-  Widget widget({RenderTexturePainter? painter, flutter.Key? key});
+  Widget widget({
+    RenderTexturePainter? painter,
+    RenderResolution resolution = RenderResolution.defaultValue,
+    flutter.Key? key,
+  });
   void dispose();
 
   bool clear(Color color, [bool write = true]);
@@ -226,7 +231,11 @@ final class UnimplementedRenderTexture extends RenderTexture {
   }
 
   @override
-  Widget widget({RenderTexturePainter? painter, flutter.Key? key}) {
+  Widget widget({
+    RenderTexturePainter? painter,
+    RenderResolution resolution = RenderResolution.defaultValue,
+    flutter.Key? key,
+  }) {
     throw UnimplementedError();
   }
 
@@ -274,4 +283,14 @@ abstract class RiveNative {
   }
 
   RenderTexture makeRenderTexture();
+
+  /// Releases cached rendering resources retained for reuse. Safe to call
+  /// when no Rive content is on screen; resources are recreated on demand.
+  /// May be a no-op on platforms that cache nothing.
+  void releaseRenderResources() {}
+
+  /// When true, logs render-texture lifecycle events — create, pool reuse,
+  /// release and why — to the console, with live WebGL context counts.
+  /// Debug aid; web only.
+  static bool debugRenderTextureLogging = false;
 }

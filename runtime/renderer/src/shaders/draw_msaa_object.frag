@@ -22,12 +22,16 @@ DYNAMIC_SAMPLER_BLOCK_END
 FRAG_DATA_MAIN(half4, @drawFragmentMain)
 {
 #ifdef @DRAW_IMAGE_MESH
-    VARYING_UNPACK(v_texCoord, float2);
+    VARYING_UNPACK(v_imageTexCoord, float2);
+    VARYING_UNPACK(v_imageOpacity, half);
+#ifdef @ENABLE_ADVANCED_BLEND
+    VARYING_UNPACK(v_imageBlendMode, ushort);
+#endif
 #else
     VARYING_UNPACK(v_paint, float4);
-#ifdef @ATLAS_BLIT
+#ifdef @FEATHER_ATLAS_BLIT
     VARYING_UNPACK(v_atlasCoord, float2);
-#endif // @ATLAS_BLIT
+#endif // @FEATHER_ATLAS_BLIT
 #ifdef @ENABLE_ADVANCED_BLEND
     VARYING_UNPACK(v_blendMode, half);
 #endif
@@ -36,16 +40,19 @@ FRAG_DATA_MAIN(half4, @drawFragmentMain)
 #ifdef @DRAW_IMAGE_MESH
     half4 color = TEXTURE_SAMPLE_DYNAMIC_LODBIAS(@imageTexture,
                                                  imageSampler,
-                                                 v_texCoord,
+                                                 v_imageTexCoord,
                                                  uniforms.mipMapLODBias) *
-                  imageDrawUniforms.opacity;
+                  v_imageOpacity;
 #else
     half coverage =
-#ifdef @ATLAS_BLIT
-        clamp(
-            TEXTURE_SAMPLE_LOD(@atlasTexture, atlasSampler, v_atlasCoord, .0).r,
-            make_half(.0),
-            make_half(1.));
+#ifdef @FEATHER_ATLAS_BLIT
+        clamp(TEXTURE_SAMPLE_LOD(@featherAtlasTexture,
+                                 featherAtlasSampler,
+                                 v_atlasCoord,
+                                 .0)
+                  .r,
+              make_half(.0),
+              make_half(1.));
 #else
         1.;
 #endif
@@ -58,7 +65,7 @@ FRAG_DATA_MAIN(half4, @drawFragmentMain)
     // Do the color portion of the blend mode in the shader.
 #ifdef @DRAW_IMAGE_MESH
     color.rgb = unmultiply_rgb(color);
-    ushort blendMode = cast_uint_to_ushort(imageDrawUniforms.blendMode);
+    ushort blendMode = v_imageBlendMode;
 #else
     // NOTE: for non-image-meshes, "color" is already unmultiplied because
     // GENERATE_PREMULTIPLIED_PAINT_COLORS is false when using advanced

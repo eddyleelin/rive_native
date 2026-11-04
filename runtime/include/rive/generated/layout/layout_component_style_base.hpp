@@ -1,15 +1,15 @@
 #ifndef _RIVE_LAYOUT_COMPONENT_STYLE_BASE_HPP_
 #define _RIVE_LAYOUT_COMPONENT_STYLE_BASE_HPP_
-#include "rive/component.hpp"
 #include "rive/core/field_types/core_bool_type.hpp"
 #include "rive/core/field_types/core_double_type.hpp"
 #include "rive/core/field_types/core_uint_type.hpp"
+#include "rive/layout/layout_sizing_style.hpp"
 namespace rive
 {
-class LayoutComponentStyleBase : public Component
+class LayoutComponentStyleBase : public LayoutSizingStyle
 {
 protected:
-    typedef Component Super;
+    typedef LayoutSizingStyle Super;
 
 public:
     static const uint16_t typeKey = 420;
@@ -21,6 +21,7 @@ public:
         switch (typeKey)
         {
             case LayoutComponentStyleBase::typeKey:
+            case LayoutSizingStyleBase::typeKey:
             case ComponentBase::typeKey:
                 return true;
             default:
@@ -32,10 +33,6 @@ public:
 
     static const uint16_t gapHorizontalPropertyKey = 498;
     static const uint16_t gapVerticalPropertyKey = 499;
-    static const uint16_t maxWidthPropertyKey = 500;
-    static const uint16_t maxHeightPropertyKey = 501;
-    static const uint16_t minWidthPropertyKey = 502;
-    static const uint16_t minHeightPropertyKey = 503;
     static const uint16_t borderLeftPropertyKey = 504;
     static const uint16_t borderRightPropertyKey = 505;
     static const uint16_t borderTopPropertyKey = 506;
@@ -52,32 +49,20 @@ public:
     static const uint16_t positionRightPropertyKey = 517;
     static const uint16_t positionTopPropertyKey = 518;
     static const uint16_t positionBottomPropertyKey = 519;
-    static const uint16_t flexPropertyKey = 520;
-    static const uint16_t flexGrowPropertyKey = 521;
-    static const uint16_t flexShrinkPropertyKey = 522;
     static const uint16_t flexBasisPropertyKey = 523;
-    static const uint16_t flexBasisUnitsValuePropertyKey = 705;
     static const uint16_t aspectRatioPropertyKey = 524;
-    static const uint16_t layoutWidthScaleTypePropertyKey = 655;
-    static const uint16_t layoutHeightScaleTypePropertyKey = 656;
+    static const uint16_t interpolatorIdPropertyKey = 591;
+    static const uint16_t interpolationTimePropertyKey = 592;
+    static const uint16_t flexBasisUnitsValuePropertyKey = 705;
     static const uint16_t layoutAlignmentTypePropertyKey = 632;
     static const uint16_t animationStyleTypePropertyKey = 589;
     static const uint16_t interpolationTypePropertyKey = 590;
-    static const uint16_t interpolatorIdPropertyKey = 591;
-    static const uint16_t interpolationTimePropertyKey = 592;
-    static const uint16_t displayValuePropertyKey = 596;
     static const uint16_t positionTypeValuePropertyKey = 597;
     static const uint16_t flexDirectionValuePropertyKey = 598;
     static const uint16_t directionValuePropertyKey = 599;
-    static const uint16_t alignContentValuePropertyKey = 600;
-    static const uint16_t alignItemsValuePropertyKey = 601;
-    static const uint16_t alignSelfValuePropertyKey = 602;
-    static const uint16_t justifyContentValuePropertyKey = 603;
     static const uint16_t flexWrapValuePropertyKey = 604;
     static const uint16_t overflowValuePropertyKey = 605;
     static const uint16_t intrinsicallySizedValuePropertyKey = 606;
-    static const uint16_t widthUnitsValuePropertyKey = 607;
-    static const uint16_t heightUnitsValuePropertyKey = 608;
     static const uint16_t borderLeftUnitsValuePropertyKey = 609;
     static const uint16_t borderRightUnitsValuePropertyKey = 610;
     static const uint16_t borderTopUnitsValuePropertyKey = 611;
@@ -96,11 +81,9 @@ public:
     static const uint16_t positionBottomUnitsValuePropertyKey = 624;
     static const uint16_t gapHorizontalUnitsValuePropertyKey = 625;
     static const uint16_t gapVerticalUnitsValuePropertyKey = 626;
-    static const uint16_t minWidthUnitsValuePropertyKey = 627;
-    static const uint16_t minHeightUnitsValuePropertyKey = 628;
-    static const uint16_t maxWidthUnitsValuePropertyKey = 629;
-    static const uint16_t maxHeightUnitsValuePropertyKey = 630;
     static const uint16_t linkCornerRadiusPropertyKey = 639;
+    static const uint16_t justifyItemsValuePropertyKey = 1045;
+    static const uint16_t layoutTypeValuePropertyKey = 1059;
     static const uint16_t cornerRadiusTLPropertyKey = 640;
     static const uint16_t cornerRadiusTRPropertyKey = 641;
     static const uint16_t cornerRadiusBLPropertyKey = 642;
@@ -109,10 +92,6 @@ public:
 protected:
     float m_GapHorizontal = 0.0f;
     float m_GapVertical = 0.0f;
-    float m_MaxWidth = 0.0f;
-    float m_MaxHeight = 0.0f;
-    float m_MinWidth = 0.0f;
-    float m_MinHeight = 0.0f;
     float m_BorderLeft = 0.0f;
     float m_BorderRight = 0.0f;
     float m_BorderTop = 0.0f;
@@ -129,55 +108,41 @@ protected:
     float m_PositionRight = 0.0f;
     float m_PositionTop = 0.0f;
     float m_PositionBottom = 0.0f;
-    float m_Flex = 0.0f;
-    float m_FlexGrow = 0.0f;
-    float m_FlexShrink = 1.0f;
     float m_FlexBasis = 0.0f;
-    uint32_t m_FlexBasisUnitsValue = 3;
     float m_AspectRatio = 0.0f;
-    uint32_t m_LayoutWidthScaleType = 0;
-    uint32_t m_LayoutHeightScaleType = 0;
-    uint32_t m_LayoutAlignmentType = 0;
-    uint32_t m_AnimationStyleType = 0;
-    uint32_t m_InterpolationType = 0;
     uint32_t m_InterpolatorId = -1;
     float m_InterpolationTime = 0.0f;
-    uint32_t m_DisplayValue = 0;
-    uint32_t m_PositionTypeValue = 1;
-    uint32_t m_FlexDirectionValue = 2;
-    uint32_t m_DirectionValue = 0;
-    uint32_t m_AlignContentValue = 0;
-    uint32_t m_AlignItemsValue = 1;
-    uint32_t m_AlignSelfValue = 0;
-    uint32_t m_JustifyContentValue = 0;
-    uint32_t m_FlexWrapValue = 0;
-    uint32_t m_OverflowValue = 0;
+    uint8_t m_FlexBasisUnitsValue = 3;
+    uint8_t m_LayoutAlignmentType = 0;
+    uint8_t m_AnimationStyleType = 0;
+    uint8_t m_InterpolationType = 0;
+    uint8_t m_PositionTypeValue = 1;
+    uint8_t m_FlexDirectionValue = 2;
+    uint8_t m_DirectionValue = 0;
+    uint8_t m_FlexWrapValue = 0;
+    uint8_t m_OverflowValue = 0;
     bool m_IntrinsicallySizedValue = false;
-    uint32_t m_WidthUnitsValue = 1;
-    uint32_t m_HeightUnitsValue = 1;
-    uint32_t m_BorderLeftUnitsValue = 0;
-    uint32_t m_BorderRightUnitsValue = 0;
-    uint32_t m_BorderTopUnitsValue = 0;
-    uint32_t m_BorderBottomUnitsValue = 0;
-    uint32_t m_MarginLeftUnitsValue = 0;
-    uint32_t m_MarginRightUnitsValue = 0;
-    uint32_t m_MarginTopUnitsValue = 0;
-    uint32_t m_MarginBottomUnitsValue = 0;
-    uint32_t m_PaddingLeftUnitsValue = 0;
-    uint32_t m_PaddingRightUnitsValue = 0;
-    uint32_t m_PaddingTopUnitsValue = 0;
-    uint32_t m_PaddingBottomUnitsValue = 0;
-    uint32_t m_PositionLeftUnitsValue = 0;
-    uint32_t m_PositionRightUnitsValue = 0;
-    uint32_t m_PositionTopUnitsValue = 0;
-    uint32_t m_PositionBottomUnitsValue = 0;
-    uint32_t m_GapHorizontalUnitsValue = 0;
-    uint32_t m_GapVerticalUnitsValue = 0;
-    uint32_t m_MinWidthUnitsValue = 0;
-    uint32_t m_MinHeightUnitsValue = 0;
-    uint32_t m_MaxWidthUnitsValue = 0;
-    uint32_t m_MaxHeightUnitsValue = 0;
+    uint8_t m_BorderLeftUnitsValue = 0;
+    uint8_t m_BorderRightUnitsValue = 0;
+    uint8_t m_BorderTopUnitsValue = 0;
+    uint8_t m_BorderBottomUnitsValue = 0;
+    uint8_t m_MarginLeftUnitsValue = 0;
+    uint8_t m_MarginRightUnitsValue = 0;
+    uint8_t m_MarginTopUnitsValue = 0;
+    uint8_t m_MarginBottomUnitsValue = 0;
+    uint8_t m_PaddingLeftUnitsValue = 0;
+    uint8_t m_PaddingRightUnitsValue = 0;
+    uint8_t m_PaddingTopUnitsValue = 0;
+    uint8_t m_PaddingBottomUnitsValue = 0;
+    uint8_t m_PositionLeftUnitsValue = 0;
+    uint8_t m_PositionRightUnitsValue = 0;
+    uint8_t m_PositionTopUnitsValue = 0;
+    uint8_t m_PositionBottomUnitsValue = 0;
+    uint8_t m_GapHorizontalUnitsValue = 0;
+    uint8_t m_GapVerticalUnitsValue = 0;
     bool m_LinkCornerRadius = true;
+    uint8_t m_JustifyItemsValue = 7;
+    uint8_t m_LayoutTypeValue = 0;
     float m_CornerRadiusTL = 0.0f;
     float m_CornerRadiusTR = 0.0f;
     float m_CornerRadiusBL = 0.0f;
@@ -206,54 +171,6 @@ public:
         m_GapVertical = value;
         gapVerticalChanged();
         notifyPropertyChanged(gapVerticalPropertyKey);
-    }
-
-    inline float maxWidth() const { return m_MaxWidth; }
-    void maxWidth(float value)
-    {
-        if (m_MaxWidth == value)
-        {
-            return;
-        }
-        m_MaxWidth = value;
-        maxWidthChanged();
-        notifyPropertyChanged(maxWidthPropertyKey);
-    }
-
-    inline float maxHeight() const { return m_MaxHeight; }
-    void maxHeight(float value)
-    {
-        if (m_MaxHeight == value)
-        {
-            return;
-        }
-        m_MaxHeight = value;
-        maxHeightChanged();
-        notifyPropertyChanged(maxHeightPropertyKey);
-    }
-
-    inline float minWidth() const { return m_MinWidth; }
-    void minWidth(float value)
-    {
-        if (m_MinWidth == value)
-        {
-            return;
-        }
-        m_MinWidth = value;
-        minWidthChanged();
-        notifyPropertyChanged(minWidthPropertyKey);
-    }
-
-    inline float minHeight() const { return m_MinHeight; }
-    void minHeight(float value)
-    {
-        if (m_MinHeight == value)
-        {
-            return;
-        }
-        m_MinHeight = value;
-        minHeightChanged();
-        notifyPropertyChanged(minHeightPropertyKey);
     }
 
     inline float borderLeft() const { return m_BorderLeft; }
@@ -448,42 +365,6 @@ public:
         notifyPropertyChanged(positionBottomPropertyKey);
     }
 
-    inline float flex() const { return m_Flex; }
-    void flex(float value)
-    {
-        if (m_Flex == value)
-        {
-            return;
-        }
-        m_Flex = value;
-        flexChanged();
-        notifyPropertyChanged(flexPropertyKey);
-    }
-
-    inline float flexGrow() const { return m_FlexGrow; }
-    void flexGrow(float value)
-    {
-        if (m_FlexGrow == value)
-        {
-            return;
-        }
-        m_FlexGrow = value;
-        flexGrowChanged();
-        notifyPropertyChanged(flexGrowPropertyKey);
-    }
-
-    inline float flexShrink() const { return m_FlexShrink; }
-    void flexShrink(float value)
-    {
-        if (m_FlexShrink == value)
-        {
-            return;
-        }
-        m_FlexShrink = value;
-        flexShrinkChanged();
-        notifyPropertyChanged(flexShrinkPropertyKey);
-    }
-
     inline float flexBasis() const { return m_FlexBasis; }
     void flexBasis(float value)
     {
@@ -496,21 +377,6 @@ public:
         notifyPropertyChanged(flexBasisPropertyKey);
     }
 
-    inline uint32_t flexBasisUnitsValue() const
-    {
-        return m_FlexBasisUnitsValue;
-    }
-    void flexBasisUnitsValue(uint32_t value)
-    {
-        if (m_FlexBasisUnitsValue == value)
-        {
-            return;
-        }
-        m_FlexBasisUnitsValue = value;
-        flexBasisUnitsValueChanged();
-        notifyPropertyChanged(flexBasisUnitsValuePropertyKey);
-    }
-
     inline float aspectRatio() const { return m_AspectRatio; }
     void aspectRatio(float value)
     {
@@ -521,75 +387,6 @@ public:
         m_AspectRatio = value;
         aspectRatioChanged();
         notifyPropertyChanged(aspectRatioPropertyKey);
-    }
-
-    inline uint32_t layoutWidthScaleType() const
-    {
-        return m_LayoutWidthScaleType;
-    }
-    void layoutWidthScaleType(uint32_t value)
-    {
-        if (m_LayoutWidthScaleType == value)
-        {
-            return;
-        }
-        m_LayoutWidthScaleType = value;
-        layoutWidthScaleTypeChanged();
-        notifyPropertyChanged(layoutWidthScaleTypePropertyKey);
-    }
-
-    inline uint32_t layoutHeightScaleType() const
-    {
-        return m_LayoutHeightScaleType;
-    }
-    void layoutHeightScaleType(uint32_t value)
-    {
-        if (m_LayoutHeightScaleType == value)
-        {
-            return;
-        }
-        m_LayoutHeightScaleType = value;
-        layoutHeightScaleTypeChanged();
-        notifyPropertyChanged(layoutHeightScaleTypePropertyKey);
-    }
-
-    inline uint32_t layoutAlignmentType() const
-    {
-        return m_LayoutAlignmentType;
-    }
-    void layoutAlignmentType(uint32_t value)
-    {
-        if (m_LayoutAlignmentType == value)
-        {
-            return;
-        }
-        m_LayoutAlignmentType = value;
-        layoutAlignmentTypeChanged();
-        notifyPropertyChanged(layoutAlignmentTypePropertyKey);
-    }
-
-    inline uint32_t animationStyleType() const { return m_AnimationStyleType; }
-    void animationStyleType(uint32_t value)
-    {
-        if (m_AnimationStyleType == value)
-        {
-            return;
-        }
-        m_AnimationStyleType = value;
-        animationStyleTypeChanged();
-        notifyPropertyChanged(animationStyleTypePropertyKey);
-    }
-
-    inline uint32_t interpolationType() const { return m_InterpolationType; }
-    void interpolationType(uint32_t value)
-    {
-        if (m_InterpolationType == value)
-        {
-            return;
-        }
-        m_InterpolationType = value;
-        interpolationTypeChanged();
-        notifyPropertyChanged(interpolationTypePropertyKey);
     }
 
     inline uint32_t interpolatorId() const { return m_InterpolatorId; }
@@ -616,20 +413,56 @@ public:
         notifyPropertyChanged(interpolationTimePropertyKey);
     }
 
-    inline uint32_t displayValue() const { return m_DisplayValue; }
-    void displayValue(uint32_t value)
+    inline uint8_t flexBasisUnitsValue() const { return m_FlexBasisUnitsValue; }
+    void flexBasisUnitsValue(uint8_t value)
     {
-        if (m_DisplayValue == value)
+        if (m_FlexBasisUnitsValue == value)
         {
             return;
         }
-        m_DisplayValue = value;
-        displayValueChanged();
-        notifyPropertyChanged(displayValuePropertyKey);
+        m_FlexBasisUnitsValue = value;
+        flexBasisUnitsValueChanged();
+        notifyPropertyChanged(flexBasisUnitsValuePropertyKey);
     }
 
-    inline uint32_t positionTypeValue() const { return m_PositionTypeValue; }
-    void positionTypeValue(uint32_t value)
+    inline uint8_t layoutAlignmentType() const { return m_LayoutAlignmentType; }
+    void layoutAlignmentType(uint8_t value)
+    {
+        if (m_LayoutAlignmentType == value)
+        {
+            return;
+        }
+        m_LayoutAlignmentType = value;
+        layoutAlignmentTypeChanged();
+        notifyPropertyChanged(layoutAlignmentTypePropertyKey);
+    }
+
+    inline uint8_t animationStyleType() const { return m_AnimationStyleType; }
+    void animationStyleType(uint8_t value)
+    {
+        if (m_AnimationStyleType == value)
+        {
+            return;
+        }
+        m_AnimationStyleType = value;
+        animationStyleTypeChanged();
+        notifyPropertyChanged(animationStyleTypePropertyKey);
+    }
+
+    inline uint8_t interpolationType() const { return m_InterpolationType; }
+    void interpolationType(uint8_t value)
+    {
+        if (m_InterpolationType == value)
+        {
+            return;
+        }
+        m_InterpolationType = value;
+        interpolationTypeChanged();
+        notifyPropertyChanged(interpolationTypePropertyKey);
+    }
+
+    inline uint8_t positionTypeValue() const { return m_PositionTypeValue; }
+    void positionTypeValue(uint8_t value)
     {
         if (m_PositionTypeValue == value)
         {
@@ -640,8 +473,8 @@ public:
         notifyPropertyChanged(positionTypeValuePropertyKey);
     }
 
-    inline uint32_t flexDirectionValue() const { return m_FlexDirectionValue; }
-    void flexDirectionValue(uint32_t value)
+    inline uint8_t flexDirectionValue() const { return m_FlexDirectionValue; }
+    void flexDirectionValue(uint8_t value)
     {
         if (m_FlexDirectionValue == value)
         {
@@ -652,8 +485,8 @@ public:
         notifyPropertyChanged(flexDirectionValuePropertyKey);
     }
 
-    inline uint32_t directionValue() const { return m_DirectionValue; }
-    void directionValue(uint32_t value)
+    inline uint8_t directionValue() const { return m_DirectionValue; }
+    void directionValue(uint8_t value)
     {
         if (m_DirectionValue == value)
         {
@@ -664,59 +497,8 @@ public:
         notifyPropertyChanged(directionValuePropertyKey);
     }
 
-    inline uint32_t alignContentValue() const { return m_AlignContentValue; }
-    void alignContentValue(uint32_t value)
-    {
-        if (m_AlignContentValue == value)
-        {
-            return;
-        }
-        m_AlignContentValue = value;
-        alignContentValueChanged();
-        notifyPropertyChanged(alignContentValuePropertyKey);
-    }
-
-    inline uint32_t alignItemsValue() const { return m_AlignItemsValue; }
-    void alignItemsValue(uint32_t value)
-    {
-        if (m_AlignItemsValue == value)
-        {
-            return;
-        }
-        m_AlignItemsValue = value;
-        alignItemsValueChanged();
-        notifyPropertyChanged(alignItemsValuePropertyKey);
-    }
-
-    inline uint32_t alignSelfValue() const { return m_AlignSelfValue; }
-    void alignSelfValue(uint32_t value)
-    {
-        if (m_AlignSelfValue == value)
-        {
-            return;
-        }
-        m_AlignSelfValue = value;
-        alignSelfValueChanged();
-        notifyPropertyChanged(alignSelfValuePropertyKey);
-    }
-
-    inline uint32_t justifyContentValue() const
-    {
-        return m_JustifyContentValue;
-    }
-    void justifyContentValue(uint32_t value)
-    {
-        if (m_JustifyContentValue == value)
-        {
-            return;
-        }
-        m_JustifyContentValue = value;
-        justifyContentValueChanged();
-        notifyPropertyChanged(justifyContentValuePropertyKey);
-    }
-
-    inline uint32_t flexWrapValue() const { return m_FlexWrapValue; }
-    void flexWrapValue(uint32_t value)
+    inline uint8_t flexWrapValue() const { return m_FlexWrapValue; }
+    void flexWrapValue(uint8_t value)
     {
         if (m_FlexWrapValue == value)
         {
@@ -727,8 +509,8 @@ public:
         notifyPropertyChanged(flexWrapValuePropertyKey);
     }
 
-    inline uint32_t overflowValue() const { return m_OverflowValue; }
-    void overflowValue(uint32_t value)
+    inline uint8_t overflowValue() const { return m_OverflowValue; }
+    void overflowValue(uint8_t value)
     {
         if (m_OverflowValue == value)
         {
@@ -754,35 +536,11 @@ public:
         notifyPropertyChanged(intrinsicallySizedValuePropertyKey);
     }
 
-    inline uint32_t widthUnitsValue() const { return m_WidthUnitsValue; }
-    void widthUnitsValue(uint32_t value)
-    {
-        if (m_WidthUnitsValue == value)
-        {
-            return;
-        }
-        m_WidthUnitsValue = value;
-        widthUnitsValueChanged();
-        notifyPropertyChanged(widthUnitsValuePropertyKey);
-    }
-
-    inline uint32_t heightUnitsValue() const { return m_HeightUnitsValue; }
-    void heightUnitsValue(uint32_t value)
-    {
-        if (m_HeightUnitsValue == value)
-        {
-            return;
-        }
-        m_HeightUnitsValue = value;
-        heightUnitsValueChanged();
-        notifyPropertyChanged(heightUnitsValuePropertyKey);
-    }
-
-    inline uint32_t borderLeftUnitsValue() const
+    inline uint8_t borderLeftUnitsValue() const
     {
         return m_BorderLeftUnitsValue;
     }
-    void borderLeftUnitsValue(uint32_t value)
+    void borderLeftUnitsValue(uint8_t value)
     {
         if (m_BorderLeftUnitsValue == value)
         {
@@ -793,11 +551,11 @@ public:
         notifyPropertyChanged(borderLeftUnitsValuePropertyKey);
     }
 
-    inline uint32_t borderRightUnitsValue() const
+    inline uint8_t borderRightUnitsValue() const
     {
         return m_BorderRightUnitsValue;
     }
-    void borderRightUnitsValue(uint32_t value)
+    void borderRightUnitsValue(uint8_t value)
     {
         if (m_BorderRightUnitsValue == value)
         {
@@ -808,11 +566,8 @@ public:
         notifyPropertyChanged(borderRightUnitsValuePropertyKey);
     }
 
-    inline uint32_t borderTopUnitsValue() const
-    {
-        return m_BorderTopUnitsValue;
-    }
-    void borderTopUnitsValue(uint32_t value)
+    inline uint8_t borderTopUnitsValue() const { return m_BorderTopUnitsValue; }
+    void borderTopUnitsValue(uint8_t value)
     {
         if (m_BorderTopUnitsValue == value)
         {
@@ -823,11 +578,11 @@ public:
         notifyPropertyChanged(borderTopUnitsValuePropertyKey);
     }
 
-    inline uint32_t borderBottomUnitsValue() const
+    inline uint8_t borderBottomUnitsValue() const
     {
         return m_BorderBottomUnitsValue;
     }
-    void borderBottomUnitsValue(uint32_t value)
+    void borderBottomUnitsValue(uint8_t value)
     {
         if (m_BorderBottomUnitsValue == value)
         {
@@ -838,11 +593,11 @@ public:
         notifyPropertyChanged(borderBottomUnitsValuePropertyKey);
     }
 
-    inline uint32_t marginLeftUnitsValue() const
+    inline uint8_t marginLeftUnitsValue() const
     {
         return m_MarginLeftUnitsValue;
     }
-    void marginLeftUnitsValue(uint32_t value)
+    void marginLeftUnitsValue(uint8_t value)
     {
         if (m_MarginLeftUnitsValue == value)
         {
@@ -853,11 +608,11 @@ public:
         notifyPropertyChanged(marginLeftUnitsValuePropertyKey);
     }
 
-    inline uint32_t marginRightUnitsValue() const
+    inline uint8_t marginRightUnitsValue() const
     {
         return m_MarginRightUnitsValue;
     }
-    void marginRightUnitsValue(uint32_t value)
+    void marginRightUnitsValue(uint8_t value)
     {
         if (m_MarginRightUnitsValue == value)
         {
@@ -868,11 +623,8 @@ public:
         notifyPropertyChanged(marginRightUnitsValuePropertyKey);
     }
 
-    inline uint32_t marginTopUnitsValue() const
-    {
-        return m_MarginTopUnitsValue;
-    }
-    void marginTopUnitsValue(uint32_t value)
+    inline uint8_t marginTopUnitsValue() const { return m_MarginTopUnitsValue; }
+    void marginTopUnitsValue(uint8_t value)
     {
         if (m_MarginTopUnitsValue == value)
         {
@@ -883,11 +635,11 @@ public:
         notifyPropertyChanged(marginTopUnitsValuePropertyKey);
     }
 
-    inline uint32_t marginBottomUnitsValue() const
+    inline uint8_t marginBottomUnitsValue() const
     {
         return m_MarginBottomUnitsValue;
     }
-    void marginBottomUnitsValue(uint32_t value)
+    void marginBottomUnitsValue(uint8_t value)
     {
         if (m_MarginBottomUnitsValue == value)
         {
@@ -898,11 +650,11 @@ public:
         notifyPropertyChanged(marginBottomUnitsValuePropertyKey);
     }
 
-    inline uint32_t paddingLeftUnitsValue() const
+    inline uint8_t paddingLeftUnitsValue() const
     {
         return m_PaddingLeftUnitsValue;
     }
-    void paddingLeftUnitsValue(uint32_t value)
+    void paddingLeftUnitsValue(uint8_t value)
     {
         if (m_PaddingLeftUnitsValue == value)
         {
@@ -913,11 +665,11 @@ public:
         notifyPropertyChanged(paddingLeftUnitsValuePropertyKey);
     }
 
-    inline uint32_t paddingRightUnitsValue() const
+    inline uint8_t paddingRightUnitsValue() const
     {
         return m_PaddingRightUnitsValue;
     }
-    void paddingRightUnitsValue(uint32_t value)
+    void paddingRightUnitsValue(uint8_t value)
     {
         if (m_PaddingRightUnitsValue == value)
         {
@@ -928,11 +680,11 @@ public:
         notifyPropertyChanged(paddingRightUnitsValuePropertyKey);
     }
 
-    inline uint32_t paddingTopUnitsValue() const
+    inline uint8_t paddingTopUnitsValue() const
     {
         return m_PaddingTopUnitsValue;
     }
-    void paddingTopUnitsValue(uint32_t value)
+    void paddingTopUnitsValue(uint8_t value)
     {
         if (m_PaddingTopUnitsValue == value)
         {
@@ -943,11 +695,11 @@ public:
         notifyPropertyChanged(paddingTopUnitsValuePropertyKey);
     }
 
-    inline uint32_t paddingBottomUnitsValue() const
+    inline uint8_t paddingBottomUnitsValue() const
     {
         return m_PaddingBottomUnitsValue;
     }
-    void paddingBottomUnitsValue(uint32_t value)
+    void paddingBottomUnitsValue(uint8_t value)
     {
         if (m_PaddingBottomUnitsValue == value)
         {
@@ -958,11 +710,11 @@ public:
         notifyPropertyChanged(paddingBottomUnitsValuePropertyKey);
     }
 
-    inline uint32_t positionLeftUnitsValue() const
+    inline uint8_t positionLeftUnitsValue() const
     {
         return m_PositionLeftUnitsValue;
     }
-    void positionLeftUnitsValue(uint32_t value)
+    void positionLeftUnitsValue(uint8_t value)
     {
         if (m_PositionLeftUnitsValue == value)
         {
@@ -973,11 +725,11 @@ public:
         notifyPropertyChanged(positionLeftUnitsValuePropertyKey);
     }
 
-    inline uint32_t positionRightUnitsValue() const
+    inline uint8_t positionRightUnitsValue() const
     {
         return m_PositionRightUnitsValue;
     }
-    void positionRightUnitsValue(uint32_t value)
+    void positionRightUnitsValue(uint8_t value)
     {
         if (m_PositionRightUnitsValue == value)
         {
@@ -988,11 +740,11 @@ public:
         notifyPropertyChanged(positionRightUnitsValuePropertyKey);
     }
 
-    inline uint32_t positionTopUnitsValue() const
+    inline uint8_t positionTopUnitsValue() const
     {
         return m_PositionTopUnitsValue;
     }
-    void positionTopUnitsValue(uint32_t value)
+    void positionTopUnitsValue(uint8_t value)
     {
         if (m_PositionTopUnitsValue == value)
         {
@@ -1003,11 +755,11 @@ public:
         notifyPropertyChanged(positionTopUnitsValuePropertyKey);
     }
 
-    inline uint32_t positionBottomUnitsValue() const
+    inline uint8_t positionBottomUnitsValue() const
     {
         return m_PositionBottomUnitsValue;
     }
-    void positionBottomUnitsValue(uint32_t value)
+    void positionBottomUnitsValue(uint8_t value)
     {
         if (m_PositionBottomUnitsValue == value)
         {
@@ -1018,11 +770,11 @@ public:
         notifyPropertyChanged(positionBottomUnitsValuePropertyKey);
     }
 
-    inline uint32_t gapHorizontalUnitsValue() const
+    inline uint8_t gapHorizontalUnitsValue() const
     {
         return m_GapHorizontalUnitsValue;
     }
-    void gapHorizontalUnitsValue(uint32_t value)
+    void gapHorizontalUnitsValue(uint8_t value)
     {
         if (m_GapHorizontalUnitsValue == value)
         {
@@ -1033,11 +785,11 @@ public:
         notifyPropertyChanged(gapHorizontalUnitsValuePropertyKey);
     }
 
-    inline uint32_t gapVerticalUnitsValue() const
+    inline uint8_t gapVerticalUnitsValue() const
     {
         return m_GapVerticalUnitsValue;
     }
-    void gapVerticalUnitsValue(uint32_t value)
+    void gapVerticalUnitsValue(uint8_t value)
     {
         if (m_GapVerticalUnitsValue == value)
         {
@@ -1046,60 +798,6 @@ public:
         m_GapVerticalUnitsValue = value;
         gapVerticalUnitsValueChanged();
         notifyPropertyChanged(gapVerticalUnitsValuePropertyKey);
-    }
-
-    inline uint32_t minWidthUnitsValue() const { return m_MinWidthUnitsValue; }
-    void minWidthUnitsValue(uint32_t value)
-    {
-        if (m_MinWidthUnitsValue == value)
-        {
-            return;
-        }
-        m_MinWidthUnitsValue = value;
-        minWidthUnitsValueChanged();
-        notifyPropertyChanged(minWidthUnitsValuePropertyKey);
-    }
-
-    inline uint32_t minHeightUnitsValue() const
-    {
-        return m_MinHeightUnitsValue;
-    }
-    void minHeightUnitsValue(uint32_t value)
-    {
-        if (m_MinHeightUnitsValue == value)
-        {
-            return;
-        }
-        m_MinHeightUnitsValue = value;
-        minHeightUnitsValueChanged();
-        notifyPropertyChanged(minHeightUnitsValuePropertyKey);
-    }
-
-    inline uint32_t maxWidthUnitsValue() const { return m_MaxWidthUnitsValue; }
-    void maxWidthUnitsValue(uint32_t value)
-    {
-        if (m_MaxWidthUnitsValue == value)
-        {
-            return;
-        }
-        m_MaxWidthUnitsValue = value;
-        maxWidthUnitsValueChanged();
-        notifyPropertyChanged(maxWidthUnitsValuePropertyKey);
-    }
-
-    inline uint32_t maxHeightUnitsValue() const
-    {
-        return m_MaxHeightUnitsValue;
-    }
-    void maxHeightUnitsValue(uint32_t value)
-    {
-        if (m_MaxHeightUnitsValue == value)
-        {
-            return;
-        }
-        m_MaxHeightUnitsValue = value;
-        maxHeightUnitsValueChanged();
-        notifyPropertyChanged(maxHeightUnitsValuePropertyKey);
     }
 
     inline bool linkCornerRadius() const { return m_LinkCornerRadius; }
@@ -1112,6 +810,30 @@ public:
         m_LinkCornerRadius = value;
         linkCornerRadiusChanged();
         notifyPropertyChanged(linkCornerRadiusPropertyKey);
+    }
+
+    inline uint8_t justifyItemsValue() const { return m_JustifyItemsValue; }
+    void justifyItemsValue(uint8_t value)
+    {
+        if (m_JustifyItemsValue == value)
+        {
+            return;
+        }
+        m_JustifyItemsValue = value;
+        justifyItemsValueChanged();
+        notifyPropertyChanged(justifyItemsValuePropertyKey);
+    }
+
+    inline uint8_t layoutTypeValue() const { return m_LayoutTypeValue; }
+    void layoutTypeValue(uint8_t value)
+    {
+        if (m_LayoutTypeValue == value)
+        {
+            return;
+        }
+        m_LayoutTypeValue = value;
+        layoutTypeValueChanged();
+        notifyPropertyChanged(layoutTypeValuePropertyKey);
     }
 
     inline float cornerRadiusTL() const { return m_CornerRadiusTL; }
@@ -1167,10 +889,6 @@ public:
     {
         m_GapHorizontal = object.m_GapHorizontal;
         m_GapVertical = object.m_GapVertical;
-        m_MaxWidth = object.m_MaxWidth;
-        m_MaxHeight = object.m_MaxHeight;
-        m_MinWidth = object.m_MinWidth;
-        m_MinHeight = object.m_MinHeight;
         m_BorderLeft = object.m_BorderLeft;
         m_BorderRight = object.m_BorderRight;
         m_BorderTop = object.m_BorderTop;
@@ -1187,32 +905,20 @@ public:
         m_PositionRight = object.m_PositionRight;
         m_PositionTop = object.m_PositionTop;
         m_PositionBottom = object.m_PositionBottom;
-        m_Flex = object.m_Flex;
-        m_FlexGrow = object.m_FlexGrow;
-        m_FlexShrink = object.m_FlexShrink;
         m_FlexBasis = object.m_FlexBasis;
-        m_FlexBasisUnitsValue = object.m_FlexBasisUnitsValue;
         m_AspectRatio = object.m_AspectRatio;
-        m_LayoutWidthScaleType = object.m_LayoutWidthScaleType;
-        m_LayoutHeightScaleType = object.m_LayoutHeightScaleType;
+        m_InterpolatorId = object.m_InterpolatorId;
+        m_InterpolationTime = object.m_InterpolationTime;
+        m_FlexBasisUnitsValue = object.m_FlexBasisUnitsValue;
         m_LayoutAlignmentType = object.m_LayoutAlignmentType;
         m_AnimationStyleType = object.m_AnimationStyleType;
         m_InterpolationType = object.m_InterpolationType;
-        m_InterpolatorId = object.m_InterpolatorId;
-        m_InterpolationTime = object.m_InterpolationTime;
-        m_DisplayValue = object.m_DisplayValue;
         m_PositionTypeValue = object.m_PositionTypeValue;
         m_FlexDirectionValue = object.m_FlexDirectionValue;
         m_DirectionValue = object.m_DirectionValue;
-        m_AlignContentValue = object.m_AlignContentValue;
-        m_AlignItemsValue = object.m_AlignItemsValue;
-        m_AlignSelfValue = object.m_AlignSelfValue;
-        m_JustifyContentValue = object.m_JustifyContentValue;
         m_FlexWrapValue = object.m_FlexWrapValue;
         m_OverflowValue = object.m_OverflowValue;
         m_IntrinsicallySizedValue = object.m_IntrinsicallySizedValue;
-        m_WidthUnitsValue = object.m_WidthUnitsValue;
-        m_HeightUnitsValue = object.m_HeightUnitsValue;
         m_BorderLeftUnitsValue = object.m_BorderLeftUnitsValue;
         m_BorderRightUnitsValue = object.m_BorderRightUnitsValue;
         m_BorderTopUnitsValue = object.m_BorderTopUnitsValue;
@@ -1231,16 +937,14 @@ public:
         m_PositionBottomUnitsValue = object.m_PositionBottomUnitsValue;
         m_GapHorizontalUnitsValue = object.m_GapHorizontalUnitsValue;
         m_GapVerticalUnitsValue = object.m_GapVerticalUnitsValue;
-        m_MinWidthUnitsValue = object.m_MinWidthUnitsValue;
-        m_MinHeightUnitsValue = object.m_MinHeightUnitsValue;
-        m_MaxWidthUnitsValue = object.m_MaxWidthUnitsValue;
-        m_MaxHeightUnitsValue = object.m_MaxHeightUnitsValue;
         m_LinkCornerRadius = object.m_LinkCornerRadius;
+        m_JustifyItemsValue = object.m_JustifyItemsValue;
+        m_LayoutTypeValue = object.m_LayoutTypeValue;
         m_CornerRadiusTL = object.m_CornerRadiusTL;
         m_CornerRadiusTR = object.m_CornerRadiusTR;
         m_CornerRadiusBL = object.m_CornerRadiusBL;
         m_CornerRadiusBR = object.m_CornerRadiusBR;
-        Component::copy(object);
+        LayoutSizingStyle::copy(object);
     }
 
     bool deserialize(uint16_t propertyKey, BinaryReader& reader) override
@@ -1252,18 +956,6 @@ public:
                 return true;
             case gapVerticalPropertyKey:
                 m_GapVertical = CoreDoubleType::deserialize(reader);
-                return true;
-            case maxWidthPropertyKey:
-                m_MaxWidth = CoreDoubleType::deserialize(reader);
-                return true;
-            case maxHeightPropertyKey:
-                m_MaxHeight = CoreDoubleType::deserialize(reader);
-                return true;
-            case minWidthPropertyKey:
-                m_MinWidth = CoreDoubleType::deserialize(reader);
-                return true;
-            case minHeightPropertyKey:
-                m_MinHeight = CoreDoubleType::deserialize(reader);
                 return true;
             case borderLeftPropertyKey:
                 m_BorderLeft = CoreDoubleType::deserialize(reader);
@@ -1313,29 +1005,20 @@ public:
             case positionBottomPropertyKey:
                 m_PositionBottom = CoreDoubleType::deserialize(reader);
                 return true;
-            case flexPropertyKey:
-                m_Flex = CoreDoubleType::deserialize(reader);
-                return true;
-            case flexGrowPropertyKey:
-                m_FlexGrow = CoreDoubleType::deserialize(reader);
-                return true;
-            case flexShrinkPropertyKey:
-                m_FlexShrink = CoreDoubleType::deserialize(reader);
-                return true;
             case flexBasisPropertyKey:
                 m_FlexBasis = CoreDoubleType::deserialize(reader);
-                return true;
-            case flexBasisUnitsValuePropertyKey:
-                m_FlexBasisUnitsValue = CoreUintType::deserialize(reader);
                 return true;
             case aspectRatioPropertyKey:
                 m_AspectRatio = CoreDoubleType::deserialize(reader);
                 return true;
-            case layoutWidthScaleTypePropertyKey:
-                m_LayoutWidthScaleType = CoreUintType::deserialize(reader);
+            case interpolatorIdPropertyKey:
+                m_InterpolatorId = CoreUintType::deserialize(reader);
                 return true;
-            case layoutHeightScaleTypePropertyKey:
-                m_LayoutHeightScaleType = CoreUintType::deserialize(reader);
+            case interpolationTimePropertyKey:
+                m_InterpolationTime = CoreDoubleType::deserialize(reader);
+                return true;
+            case flexBasisUnitsValuePropertyKey:
+                m_FlexBasisUnitsValue = CoreUintType::deserialize(reader);
                 return true;
             case layoutAlignmentTypePropertyKey:
                 m_LayoutAlignmentType = CoreUintType::deserialize(reader);
@@ -1346,15 +1029,6 @@ public:
             case interpolationTypePropertyKey:
                 m_InterpolationType = CoreUintType::deserialize(reader);
                 return true;
-            case interpolatorIdPropertyKey:
-                m_InterpolatorId = CoreUintType::deserialize(reader);
-                return true;
-            case interpolationTimePropertyKey:
-                m_InterpolationTime = CoreDoubleType::deserialize(reader);
-                return true;
-            case displayValuePropertyKey:
-                m_DisplayValue = CoreUintType::deserialize(reader);
-                return true;
             case positionTypeValuePropertyKey:
                 m_PositionTypeValue = CoreUintType::deserialize(reader);
                 return true;
@@ -1364,18 +1038,6 @@ public:
             case directionValuePropertyKey:
                 m_DirectionValue = CoreUintType::deserialize(reader);
                 return true;
-            case alignContentValuePropertyKey:
-                m_AlignContentValue = CoreUintType::deserialize(reader);
-                return true;
-            case alignItemsValuePropertyKey:
-                m_AlignItemsValue = CoreUintType::deserialize(reader);
-                return true;
-            case alignSelfValuePropertyKey:
-                m_AlignSelfValue = CoreUintType::deserialize(reader);
-                return true;
-            case justifyContentValuePropertyKey:
-                m_JustifyContentValue = CoreUintType::deserialize(reader);
-                return true;
             case flexWrapValuePropertyKey:
                 m_FlexWrapValue = CoreUintType::deserialize(reader);
                 return true;
@@ -1384,12 +1046,6 @@ public:
                 return true;
             case intrinsicallySizedValuePropertyKey:
                 m_IntrinsicallySizedValue = CoreBoolType::deserialize(reader);
-                return true;
-            case widthUnitsValuePropertyKey:
-                m_WidthUnitsValue = CoreUintType::deserialize(reader);
-                return true;
-            case heightUnitsValuePropertyKey:
-                m_HeightUnitsValue = CoreUintType::deserialize(reader);
                 return true;
             case borderLeftUnitsValuePropertyKey:
                 m_BorderLeftUnitsValue = CoreUintType::deserialize(reader);
@@ -1445,20 +1101,14 @@ public:
             case gapVerticalUnitsValuePropertyKey:
                 m_GapVerticalUnitsValue = CoreUintType::deserialize(reader);
                 return true;
-            case minWidthUnitsValuePropertyKey:
-                m_MinWidthUnitsValue = CoreUintType::deserialize(reader);
-                return true;
-            case minHeightUnitsValuePropertyKey:
-                m_MinHeightUnitsValue = CoreUintType::deserialize(reader);
-                return true;
-            case maxWidthUnitsValuePropertyKey:
-                m_MaxWidthUnitsValue = CoreUintType::deserialize(reader);
-                return true;
-            case maxHeightUnitsValuePropertyKey:
-                m_MaxHeightUnitsValue = CoreUintType::deserialize(reader);
-                return true;
             case linkCornerRadiusPropertyKey:
                 m_LinkCornerRadius = CoreBoolType::deserialize(reader);
+                return true;
+            case justifyItemsValuePropertyKey:
+                m_JustifyItemsValue = CoreUintType::deserialize(reader);
+                return true;
+            case layoutTypeValuePropertyKey:
+                m_LayoutTypeValue = CoreUintType::deserialize(reader);
                 return true;
             case cornerRadiusTLPropertyKey:
                 m_CornerRadiusTL = CoreDoubleType::deserialize(reader);
@@ -1473,16 +1123,12 @@ public:
                 m_CornerRadiusBR = CoreDoubleType::deserialize(reader);
                 return true;
         }
-        return Component::deserialize(propertyKey, reader);
+        return LayoutSizingStyle::deserialize(propertyKey, reader);
     }
 
 protected:
     virtual void gapHorizontalChanged() {}
     virtual void gapVerticalChanged() {}
-    virtual void maxWidthChanged() {}
-    virtual void maxHeightChanged() {}
-    virtual void minWidthChanged() {}
-    virtual void minHeightChanged() {}
     virtual void borderLeftChanged() {}
     virtual void borderRightChanged() {}
     virtual void borderTopChanged() {}
@@ -1499,32 +1145,20 @@ protected:
     virtual void positionRightChanged() {}
     virtual void positionTopChanged() {}
     virtual void positionBottomChanged() {}
-    virtual void flexChanged() {}
-    virtual void flexGrowChanged() {}
-    virtual void flexShrinkChanged() {}
     virtual void flexBasisChanged() {}
-    virtual void flexBasisUnitsValueChanged() {}
     virtual void aspectRatioChanged() {}
-    virtual void layoutWidthScaleTypeChanged() {}
-    virtual void layoutHeightScaleTypeChanged() {}
+    virtual void interpolatorIdChanged() {}
+    virtual void interpolationTimeChanged() {}
+    virtual void flexBasisUnitsValueChanged() {}
     virtual void layoutAlignmentTypeChanged() {}
     virtual void animationStyleTypeChanged() {}
     virtual void interpolationTypeChanged() {}
-    virtual void interpolatorIdChanged() {}
-    virtual void interpolationTimeChanged() {}
-    virtual void displayValueChanged() {}
     virtual void positionTypeValueChanged() {}
     virtual void flexDirectionValueChanged() {}
     virtual void directionValueChanged() {}
-    virtual void alignContentValueChanged() {}
-    virtual void alignItemsValueChanged() {}
-    virtual void alignSelfValueChanged() {}
-    virtual void justifyContentValueChanged() {}
     virtual void flexWrapValueChanged() {}
     virtual void overflowValueChanged() {}
     virtual void intrinsicallySizedValueChanged() {}
-    virtual void widthUnitsValueChanged() {}
-    virtual void heightUnitsValueChanged() {}
     virtual void borderLeftUnitsValueChanged() {}
     virtual void borderRightUnitsValueChanged() {}
     virtual void borderTopUnitsValueChanged() {}
@@ -1543,11 +1177,9 @@ protected:
     virtual void positionBottomUnitsValueChanged() {}
     virtual void gapHorizontalUnitsValueChanged() {}
     virtual void gapVerticalUnitsValueChanged() {}
-    virtual void minWidthUnitsValueChanged() {}
-    virtual void minHeightUnitsValueChanged() {}
-    virtual void maxWidthUnitsValueChanged() {}
-    virtual void maxHeightUnitsValueChanged() {}
     virtual void linkCornerRadiusChanged() {}
+    virtual void justifyItemsValueChanged() {}
+    virtual void layoutTypeValueChanged() {}
     virtual void cornerRadiusTLChanged() {}
     virtual void cornerRadiusTRChanged() {}
     virtual void cornerRadiusBLChanged() {}

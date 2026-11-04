@@ -139,12 +139,22 @@ struct PlatformFeatures
     bool supportsBlendAdvancedCoherentKHR = false;
     // Required for @ENABLE_CLIP_RECT in msaa mode.
     bool supportsClipPlanes = false;
+    // The backend supports dynamic state that allows Rive to collapse multiple
+    // subpasses onto a single pipeline, namely:
+    //  * Depth (Vulkan 1.3)
+    //  * Stencil (Vulkan 1.3)
+    //  * Cull (Vulkan 1.3)
+    //  * Color-write (VK_EXT_color_write_enable)
+    // With this state being dynamic, we can combine multiple subpasses (e.g.,
+    // borrowed coverage, fans, stencil reset) onto a single dynamic pipeline
+    // with multiple draws and state updates in between.
+    bool supportsPipelineDynamicState = false;
     bool avoidFlatVaryings = false;
     // Vivo Y21 (PowerVR Rogue GE8320; OpenGL ES 3.2 build 1.13@5776728a) seems
     // to hit some sort of reset condition that corrupts pixel local storage
     // when rendering a complex feather. Provide a workaround that allows the
-    // implementation to opt in to always feathering to the atlas instead of
-    // rendering directly to the screen.
+    // implementation to opt in to always feathering to the feather atlas
+    // instead of rendering directly to the screen.
     bool alwaysFeatherToAtlas = false;
     // clipSpaceBottomUp specifies whether the top of the viewport, in clip
     // coordinates, is at Y=+1 (OpenGL, Metal, D3D, WebGPU) or Y=-1 (Vulkan).
@@ -649,7 +659,7 @@ enum class DrawType : uint8_t
     outerCurvePatches,
 
     interiorTriangulation,
-    atlasBlit,
+    featherAtlasBlit,
     imageRect,
     imageMesh,
 
@@ -661,6 +671,13 @@ enum class DrawType : uint8_t
     msaaMidpointFanBorrowedCoverage,
     msaaMidpointFans,
     msaaMidpointFanStencilReset,
+
+    // Equivalent to msaaMidpointFanBorrowedCoverage + msaaMidpointFans +
+    // msaaMidpointFanStencilReset on a single pipeline, switching between them
+    // with dynamic color/depth/stencil/cull state. Keeps the three passes on
+    // one batch so the reorderer can still instance non-overlapping paths
+    // together, while collapsing three pipeline binds into one.
+    msaaDynamicMidpointFans,
 
     // MSAA "slow" path: stencil-then-cover.
     msaaMidpointFanPathsStencil,
@@ -697,9 +714,10 @@ constexpr static bool DrawTypeIsImageDraw(DrawType drawType)
         case DrawType::midpointFanCenterAAPatches:
         case DrawType::outerCurvePatches:
         case DrawType::interiorTriangulation:
-        case DrawType::atlasBlit:
+        case DrawType::featherAtlasBlit:
         case DrawType::msaaStrokes:
         case DrawType::msaaMidpointFanBorrowedCoverage:
+        case DrawType::msaaDynamicMidpointFans:
         case DrawType::msaaMidpointFans:
         case DrawType::msaaMidpointFanStencilReset:
         case DrawType::msaaMidpointFanPathsStencil:
@@ -709,72 +727,6 @@ constexpr static bool DrawTypeIsImageDraw(DrawType drawType)
         case DrawType::renderPassInitialize:
         case DrawType::renderPassResolve:
             return false;
-    }
-    RIVE_UNREACHABLE();
-}
-
-constexpr static uint32_t PatchIndexCount(DrawType drawType)
-{
-    switch (drawType)
-    {
-        case DrawType::midpointFanPatches:
-            return kMidpointFanPatchIndexCount;
-        case DrawType::midpointFanCenterAAPatches:
-            return kMidpointFanCenterAAPatchIndexCount;
-        case DrawType::outerCurvePatches:
-            return kOuterCurvePatchIndexCount;
-        case DrawType::msaaStrokes:
-            return kMidpointFanPatchBorderIndexCount;
-        case DrawType::msaaMidpointFanBorrowedCoverage:
-        case DrawType::msaaMidpointFans:
-        case DrawType::msaaMidpointFanStencilReset:
-        case DrawType::msaaMidpointFanPathsStencil:
-        case DrawType::msaaMidpointFanPathsCover:
-            return kMidpointFanPatchIndexCount -
-                   kMidpointFanPatchBorderIndexCount;
-        case DrawType::msaaOuterCubics:
-            return kOuterCurvePatchIndexCount -
-                   kOuterCurvePatchBorderIndexCount;
-        case DrawType::interiorTriangulation:
-        case DrawType::atlasBlit:
-        case DrawType::imageRect:
-        case DrawType::imageMesh:
-        case DrawType::clipReset:
-        case DrawType::renderPassInitialize:
-        case DrawType::renderPassResolve:
-            RIVE_UNREACHABLE();
-    }
-    RIVE_UNREACHABLE();
-}
-
-constexpr static uint32_t PatchBaseIndex(DrawType drawType)
-{
-    switch (drawType)
-    {
-        case DrawType::midpointFanPatches:
-        case DrawType::msaaStrokes:
-            return kMidpointFanPatchBaseIndex;
-        case DrawType::midpointFanCenterAAPatches:
-            return kMidpointFanCenterAAPatchBaseIndex;
-        case DrawType::outerCurvePatches:
-            return kOuterCurvePatchBaseIndex;
-        case DrawType::msaaMidpointFanBorrowedCoverage:
-        case DrawType::msaaMidpointFans:
-        case DrawType::msaaMidpointFanStencilReset:
-        case DrawType::msaaMidpointFanPathsStencil:
-        case DrawType::msaaMidpointFanPathsCover:
-            return kMidpointFanPatchBaseIndex +
-                   kMidpointFanPatchBorderIndexCount;
-        case DrawType::msaaOuterCubics:
-            return kOuterCurvePatchBaseIndex + kOuterCurvePatchBorderIndexCount;
-        case DrawType::interiorTriangulation:
-        case DrawType::atlasBlit:
-        case DrawType::imageRect:
-        case DrawType::imageMesh:
-        case DrawType::clipReset:
-        case DrawType::renderPassInitialize:
-        case DrawType::renderPassResolve:
-            RIVE_UNREACHABLE();
     }
     RIVE_UNREACHABLE();
 }
@@ -948,7 +900,7 @@ constexpr static ShaderFeatures ShaderFeaturesMaskFor(
     {
         case DrawType::imageRect:
         case DrawType::imageMesh:
-        case DrawType::atlasBlit:
+        case DrawType::featherAtlasBlit:
             if (interlockMode != InterlockMode::atomics)
             {
                 mask = ShaderFeatures::ENABLE_CLIPPING |
@@ -967,6 +919,7 @@ constexpr static ShaderFeatures ShaderFeaturesMaskFor(
         case DrawType::interiorTriangulation:
         case DrawType::msaaStrokes:
         case DrawType::msaaMidpointFanBorrowedCoverage:
+        case DrawType::msaaDynamicMidpointFans:
         case DrawType::msaaMidpointFans:
         case DrawType::msaaMidpointFanStencilReset:
         case DrawType::msaaMidpointFanPathsStencil:
@@ -1203,8 +1156,15 @@ struct DrawBatch
     const DrawType drawType;
     ShaderMiscFlags shaderMiscFlags;
     DrawContents drawContents;
-    uint32_t elementCount; // Vertex, index, or instance count.
-    uint32_t baseElement;  // Base vertex, index, or instance.
+    // elementCount/baseElement are the "splice axis": the run that grows when
+    // adjacent batches combine. For instanced draws (paths, image draws) that
+    // is instances; for non-indexed triangle runs (interiorTriangulation,
+    // featherAtlasBlit, clipReset) it is vertices.
+    uint32_t elementCount; // Instance count, or vertex count for triangle runs.
+    uint32_t baseElement;  // Base instance, or base vertex for triangle runs.
+    // Geometry parameters for indexed-instanced types (paths and image draws).
+    uint32_t indexCountPerInstance = 0;
+    uint32_t baseIndex = 0;
     rive::BlendMode firstBlendMode;
     BarrierFlags barriers; // Barriers to execute before drawing this batch.
     std::optional<AABBu16> scissorRect;
@@ -1212,7 +1172,6 @@ struct DrawBatch
     ShaderFeatures shaderFeatures = ShaderFeatures::NONE;
 
     // DrawType::imageRect and DrawType::imageMesh.
-    uint32_t imageDrawDataOffset = 0;
     Texture* imageTexture = nullptr;
     const ImageSampler imageSampler = ImageSampler::LinearClamp();
 
@@ -1316,14 +1275,14 @@ struct FlushDescriptor
     // the color buffer, regardless of blend mode.
     bool fixedFunctionColorOutput = false;
 
-    // Physical size of the atlas texture.
-    uint16_t atlasTextureWidth;
-    uint16_t atlasTextureHeight;
+    // Physical size of the feather atlas texture.
+    uint16_t featherAtlasTextureWidth;
+    uint16_t featherAtlasTextureHeight;
 
-    // Boundaries of the content for this specific flush within the atlas
-    // texture.
-    uint16_t atlasContentWidth;
-    uint16_t atlasContentHeight;
+    // Boundaries of the content for this specific flush within the feather
+    // atlas texture.
+    uint16_t featherAtlasContentWidth;
+    uint16_t featherAtlasContentHeight;
 
     // Monotonically increasing prefix that gets appended to the most
     // significant "32 - CLOCKWISE_COVERAGE_BIT_COUNT" bits of coverage buffer
@@ -1375,13 +1334,13 @@ struct FlushDescriptor
 
     // List of feathered fills (if any) that must be rendered to the atlas
     // before the main render pass.
-    const AtlasDrawBatch* atlasFillBatches = nullptr;
-    size_t atlasFillBatchCount = 0;
+    const AtlasDrawBatch* featherAtlasFillBatches = nullptr;
+    size_t featherAtlasFillBatchCount = 0;
 
     // List of feathered strokes (if any) that must be rendered to the atlas
     // before the main render pass.
-    const AtlasDrawBatch* atlasStrokeBatches = nullptr;
-    size_t atlasStrokeBatchCount = 0;
+    const AtlasDrawBatch* featherAtlasStrokeBatches = nullptr;
+    size_t featherAtlasStrokeBatchCount = 0;
 
     // List of draws in the main render pass. These are rendered directly to the
     // renderTarget.
@@ -1463,8 +1422,9 @@ private:
     // drawBounds, or renderTargetBounds if there is a clear. (Used by the
     // "@RESOLVE_PLS" step in InterlockMode::atomics.)
     WRITEONLY IAABB m_renderTargetUpdateBounds;
-    WRITEONLY Vec2D m_atlasTextureInverseSize; // 1 / [atlasWidth, atlasHeight]
-    WRITEONLY Vec2D m_atlasContentInverseViewport; // 2 / atlasContentBounds
+    WRITEONLY Vec2D m_featherAtlasTextureInverseSize; // 1 / [atlasWidth,Height]
+    WRITEONLY Vec2D
+        m_featherAtlasContentInverseViewport; // 2 / atlasContentBounds
     // Monotonically increasing prefix that gets appended to the most
     // significant "32 - CLOCKWISE_COVERAGE_BIT_COUNT" bits of coverage buffer
     // values. (clockwiseAtomic mode only.)
@@ -1521,7 +1481,7 @@ constexpr static uint32_t StorageBufferElementSizeInBytes(
     RIVE_UNREACHABLE();
 }
 
-// Defines a transform from screen space into a region of the atlas.
+// Defines a transform from screen space into a region of an atlas.
 // The atlas may have a different scale factor than the screen.
 struct AtlasTransform
 {
@@ -1557,7 +1517,7 @@ public:
              float strokeRadius,
              float featherRadius,
              uint32_t zIndex,
-             const AtlasTransform&,
+             const AtlasTransform& featherAtlasTransform,
              const CoverageBufferRange&);
 
 private:
@@ -1568,7 +1528,7 @@ private:
     // InterlockMode::msaa.
     WRITEONLY uint32_t m_zIndex;
     // Only used when rendering coverage via the atlas.
-    WRITEONLY AtlasTransform m_atlasTransform;
+    WRITEONLY AtlasTransform m_featherAtlasTransform;
     // InterlockMode::clockwiseAtomic.
     WRITEONLY CoverageBufferRange m_coverageBufferRange;
 };
@@ -1697,13 +1657,23 @@ private:
 };
 static_assert(sizeof(TriangleVertex) == sizeof(float) * 3);
 
-// Per-draw uniforms used by image meshes.
-struct ImageDrawUniforms
+// Per-draw instanced attributes used by imageMeshes and imageRects.
+struct ImageDrawInstance
 {
 public:
-    ImageDrawUniforms() = default;
+    // This data is bound to image shaders as 4 tightly-packed instanced
+    // attributes. The vertex shader unpacks them.
+    //   attr 2 (float4): viewMatrix (2x2)
+    //   attr 3 (float4): clipRectInverseMatrix (2x2)
+    //   attr 4 (float4): translates for view & clipRectInverseMatrix
+    //   attr 5 (uint4) : opacity (uintBitsToFloat), clipID, blendMode, zIndex
+    constexpr static size_t FirstAttribIdx = 2;
+    constexpr static size_t LastAttribIdx = 5;
+    constexpr static size_t AttribCount = LastAttribIdx + 1 - FirstAttribIdx;
 
-    ImageDrawUniforms(const Mat2D&,
+    ImageDrawInstance() = default;
+
+    ImageDrawInstance(const Mat2D&,
                       float opacity,
                       const ClipRectInverseMatrix*,
                       uint32_t clipID,
@@ -1711,23 +1681,14 @@ public:
                       uint32_t zIndex);
 
 private:
-    WRITEONLY float m_matrix[6];
+    WRITEONLY float m_viewMatrix[4];
+    WRITEONLY float m_clipRectInverseMatrix[4];
+    WRITEONLY float m_translate[2];
+    WRITEONLY float m_clipRectInverseTranslate[2];
     WRITEONLY float m_opacity;
-    WRITEONLY float m_padding = 0;
-    WRITEONLY float m_clipRectInverseMatrix[6];
     WRITEONLY uint32_t m_clipID;
     WRITEONLY uint32_t m_blendMode;
-    WRITEONLY uint32_t m_zIndex; // gpu::InterlockMode::msaa only.
-    // Uniform blocks must be multiples of 256 bytes in size.
-    WRITEONLY uint8_t m_padTo256Bytes[256 - 68];
-
-    constexpr void staticChecks()
-    {
-        static_assert(offsetof(ImageDrawUniforms, m_matrix) % 16 == 0);
-        static_assert(
-            offsetof(ImageDrawUniforms, m_clipRectInverseMatrix) % 16 == 0);
-        static_assert(sizeof(ImageDrawUniforms) == 256);
-    }
+    WRITEONLY uint32_t m_zIndex;
 };
 
 #undef WRITEONLY
@@ -1900,9 +1861,9 @@ enum class StencilCompareOp : uint8_t
 
 struct StencilFaceOps
 {
-    StencilOp failOp = StencilOp::keep;
-    StencilOp passOp = StencilOp::keep;
+    StencilOp stencilFailOp = StencilOp::keep;
     StencilOp depthFailOp = StencilOp::keep;
+    StencilOp depthStencilPassOp = StencilOp::keep;
     StencilCompareOp compareOp = StencilCompareOp::always;
 };
 
@@ -2030,17 +1991,18 @@ constexpr inline PipelineState make_flat_pipeline_state(CullFace cull,
 constexpr static PipelineState COLOR_ONLY_PIPELINE_STATE =
     make_flat_pipeline_state(CullFace::none, BlendEquation::none);
 
-constexpr static PipelineState ATLAS_FILL_PIPELINE_STATE =
+constexpr static PipelineState FEATHER_ATLAS_FILL_PIPELINE_STATE =
     make_flat_pipeline_state(CullFace::none, BlendEquation::plus);
 
-constexpr static PipelineState ATLAS_STROKE_PIPELINE_STATE =
+constexpr static PipelineState FEATHER_ATLAS_STROKE_PIPELINE_STATE =
     make_flat_pipeline_state(CullFace::counterclockwise, BlendEquation::max);
 
 float4 cast_f16_to_f32(uint16x4 x);
 uint16x4 cast_f32_to_f16(float4);
 
 // These tables integrate the gaussian function, and its inverse, covering a
-// spread of -FEATHER_TEXTURE_STDDEVS to +FEATHER_TEXTURE_STDDEVS.
+// spread of -GAUSSIAN_INTEGRAL_TEXTURE_STDDEVS to
+// +GAUSSIAN_INTEGRAL_TEXTURE_STDDEVS.
 constexpr static uint32_t GAUSSIAN_TABLE_SIZE = 512;
 extern const uint16_t g_gaussianIntegralTableF16[GAUSSIAN_TABLE_SIZE];
 extern const uint16_t g_inverseGaussianIntegralTableF16[GAUSSIAN_TABLE_SIZE];

@@ -93,6 +93,16 @@ void GLState::setScissor(IAABB scissor, uint32_t renderTargetHeight)
                   scissor.height());
 }
 
+void GLState::setScissor(AABBu16 scissor, uint32_t renderTargetHeight)
+{
+    assert(scissor.right >= scissor.left);
+    assert(scissor.bottom >= scissor.top);
+    setScissorRaw(scissor.left,
+                  renderTargetHeight - scissor.bottom,
+                  scissor.width(),
+                  scissor.height());
+}
+
 void GLState::setScissorRaw(uint32_t left,
                             uint32_t top,
                             uint32_t width,
@@ -345,9 +355,19 @@ void GLState::setWriteMasks(bool colorWriteMask,
     }
 }
 
-void GLState::setPipelineState(const gpu::PipelineState& pipelineState)
+void GLState::setPipelineState(const gpu::PipelineState& pipelineState,
+                               ScissorAction scissorAction)
 {
-    disableScissor(); // Scissor isn't currently used in the pipeline state.
+    switch (scissorAction)
+    {
+        case ScissorAction::disable:
+            disableScissor();
+            break;
+
+        case ScissorAction::ignore:
+            break;
+    }
+
     setDepthStencilEnabled(pipelineState.depthTestEnabled,
                            pipelineState.stencilTestEnabled);
     if (pipelineState.stencilTestEnabled)
@@ -359,9 +379,10 @@ void GLState::setPipelineState(const gpu::PipelineState& pipelineState)
                 pipelineState.stencilReference,
                 pipelineState.stencilCompareMask);
             glStencilOp(
-                gl_stencil_op(pipelineState.stencilFrontOps.failOp),
+                gl_stencil_op(pipelineState.stencilFrontOps.stencilFailOp),
                 gl_stencil_op(pipelineState.stencilFrontOps.depthFailOp),
-                gl_stencil_op(pipelineState.stencilFrontOps.passOp));
+                gl_stencil_op(
+                    pipelineState.stencilFrontOps.depthStencilPassOp));
         }
         else
         {
@@ -372,9 +393,10 @@ void GLState::setPipelineState(const gpu::PipelineState& pipelineState)
                 pipelineState.stencilCompareMask);
             glStencilOpSeparate(
                 GL_FRONT,
-                gl_stencil_op(pipelineState.stencilFrontOps.failOp),
+                gl_stencil_op(pipelineState.stencilFrontOps.stencilFailOp),
                 gl_stencil_op(pipelineState.stencilFrontOps.depthFailOp),
-                gl_stencil_op(pipelineState.stencilFrontOps.passOp));
+                gl_stencil_op(
+                    pipelineState.stencilFrontOps.depthStencilPassOp));
             glStencilFuncSeparate(
                 GL_BACK,
                 gl_stencil_func(pipelineState.stencilBackOps.compareOp),
@@ -382,9 +404,9 @@ void GLState::setPipelineState(const gpu::PipelineState& pipelineState)
                 pipelineState.stencilCompareMask);
             glStencilOpSeparate(
                 GL_BACK,
-                gl_stencil_op(pipelineState.stencilBackOps.failOp),
+                gl_stencil_op(pipelineState.stencilBackOps.stencilFailOp),
                 gl_stencil_op(pipelineState.stencilBackOps.depthFailOp),
-                gl_stencil_op(pipelineState.stencilBackOps.passOp));
+                gl_stencil_op(pipelineState.stencilBackOps.depthStencilPassOp));
         }
     }
     setCullFace(gl_cull_face(pipelineState.cullFace));

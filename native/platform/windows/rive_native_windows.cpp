@@ -1,4 +1,5 @@
 #include "rive_native/external.hpp"
+#include "rive_native/fence_wait_thread.hpp"
 #include "rive_native/rive_binding.hpp"
 #include "rive/renderer/d3d11/render_context_d3d_impl.hpp"
 #include "rive/renderer/rive_renderer.hpp"
@@ -58,7 +59,17 @@ public:
                                           D3D11_FENCE_FLAG_NONE,
                                           __uuidof(ID3D11Fence),
                                           (void**)&m_lastFrameFence));
-            m_fenceWaitThread = std::thread(FenceWaitThread, this);
+            m_fenceWaitThread =
+                std::make_unique<FenceWaitThread>([this](uint64_t frameIndex) {
+                    // Wait until the fence completes.
+                    VERIFY_OK(m_lastFrameFence->SetEventOnCompletion(frameIndex,
+                                                                     nullptr));
+
+                    // Present the last texture now that the GPU has finished
+                    // rendering it.
+                    m_swapchain->presentTexture(std::move(m_lastFrameTexture));
+                    m_rendererEndCallback(m_userData);
+                });
         }
         else
         {
@@ -74,17 +85,8 @@ public:
 
     ~WindowsContextPLS()
     {
-        if (m_lastFrameFence)
-        {
-            // Tell m_fenceWaitThread to terminate.
-            {
-                std::unique_lock lock(m_fenceWaitMutex);
-                assert(m_activeFenceWaitIndex == 0);
-                m_activeFenceWaitIndex = THREAD_TERMINATE_INDEX;
-            }
-            m_fenceWaitCond.notify_one();
-            m_fenceWaitThread.join();
-        }
+        // Drains any in-flight frame and joins before other members go away.
+        m_fenceWaitThread.reset();
     }
 
     void begin(bool clear, uint32_t color)
@@ -124,16 +126,9 @@ public:
 
         if (m_lastFrameFence != nullptr)
         {
-            if (m_lastFrameIndex > 0)
-            {
-                // Block until m_fenceWaitThread has finished waiting on the
-                // fence and has presented the previous frame texture.
-                std::unique_lock lock(m_fenceWaitMutex);
-                while (m_activeFenceWaitIndex != 0)
-                {
-                    m_fenceWaitCond.wait(lock);
-                }
-            }
+            // Block until m_fenceWaitThread has finished waiting on the
+            // fence and has presented the previous frame texture.
+            m_fenceWaitThread->waitForIdle();
 
             // Insert a fence for this frame.
             VERIFY_OK(m_gpuContext4->Signal(m_lastFrameFence.Get(),
@@ -153,12 +148,7 @@ public:
         {
             // Kick off m_fenceWaitThread to wait on this frame's fence and then
             // present the texture.
-            {
-                std::unique_lock lock(m_fenceWaitMutex);
-                assert(m_activeFenceWaitIndex == 0);
-                m_activeFenceWaitIndex = m_lastFrameIndex;
-            }
-            m_fenceWaitCond.notify_one();
+            m_fenceWaitThread->kick(m_lastFrameIndex);
         }
         else
         {
@@ -191,48 +181,6 @@ public:
     RiveNativeRendererContext* renderContext() { return m_renderContext.get(); }
 
 private:
-    static void FenceWaitThread(void* thisPtr)
-    {
-        reinterpret_cast<WindowsContextPLS*>(thisPtr)->fenceWaitThread();
-    }
-
-    void fenceWaitThread()
-    {
-        for (;;)
-        {
-            // Block until the main thread gives us a fence to wait on.
-            {
-                std::unique_lock lock(m_fenceWaitMutex);
-                while (m_activeFenceWaitIndex == 0)
-                {
-                    m_fenceWaitCond.wait(lock);
-                }
-            }
-
-            if (m_activeFenceWaitIndex == THREAD_TERMINATE_INDEX)
-            {
-                break;
-            }
-
-            // Wait until the fence completes.
-            VERIFY_OK(
-                m_lastFrameFence->SetEventOnCompletion(m_activeFenceWaitIndex,
-                                                       nullptr));
-
-            // Present the last texture now that the GPU has finished rendering
-            // it.
-            m_swapchain->presentTexture(std::move(m_lastFrameTexture));
-            m_rendererEndCallback(m_userData);
-
-            // Notify that the fence wait & present are complete.
-            {
-                std::unique_lock lock(m_fenceWaitMutex);
-                m_activeFenceWaitIndex = 0;
-            }
-            m_fenceWaitCond.notify_one();
-        }
-    }
-
     FlutterWindowsSwapchain* m_swapchain;
     rive::rcp<RiveNativeRendererContext> m_renderContext;
     rive::rcp<rive::gpu::RenderTargetD3D> m_renderTarget;
@@ -245,13 +193,9 @@ private:
     ComPtr<ID3D11Device5> m_gpu5;
     ComPtr<ID3D11DeviceContext4> m_gpuContext4;
     ComPtr<ID3D11Fence> m_lastFrameFence;
-    std::mutex m_fenceWaitMutex;
-    std::condition_variable m_fenceWaitCond;
-    std::thread m_fenceWaitThread;
+    std::unique_ptr<FenceWaitThread> m_fenceWaitThread;
     std::unique_ptr<FlutterWindowsTexture> m_lastFrameTexture;
     uint64_t m_lastFrameIndex = 0;
-    volatile uint64_t m_activeFenceWaitIndex = 0;
-    constexpr static uint64_t THREAD_TERMINATE_INDEX = -1;
 
     // Used as a fallback when fences aren't supported.
     ComPtr<ID3D11Query> m_fallbackCompletionQuery;

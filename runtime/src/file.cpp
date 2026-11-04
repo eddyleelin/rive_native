@@ -95,6 +95,7 @@
 #include "rive/viewmodel/viewmodel_property_trigger.hpp"
 #include "rive/viewmodel/viewmodel_property_symbol_list_index.hpp"
 #include "rive/viewmodel/runtime/viewmodel_runtime.hpp"
+#include "rive/view_model_type.hpp"
 
 // Default namespace for Rive Cpp code
 using namespace rive;
@@ -167,7 +168,9 @@ static Core* readRuntimeObject(BinaryReader& reader,
             switch (id)
             {
                 case CoreUintType::id:
-                    CoreUintType::deserialize(reader);
+                    // Uint64 shares the uint type id; skip the full range so
+                    // an unknown 64 bit value never aborts the read.
+                    reader.readVarUint64();
                     break;
                 case CoreStringType::id:
                     CoreStringType::deserialize(reader);
@@ -295,6 +298,7 @@ rcp<File> File::import(Span<const uint8_t> bytes,
 ImportResult File::read(BinaryReader& reader, const RuntimeHeader& header)
 {
     ImportStack importStack;
+    importStack.version(header.majorVersion(), header.minorVersion());
 #ifdef WITH_RIVE_SCRIPTING
     std::vector<InBandContent> inBandContent;
 #endif
@@ -545,6 +549,7 @@ ImportResult File::read(BinaryReader& reader, const RuntimeHeader& header)
                 break;
             case TransitionViewModelCondition::typeKey:
             case TransitionArtboardCondition::typeKey:
+            case TransitionFocusCondition::typeKey:
                 stackObject =
                     std::make_unique<TransitionViewModelConditionImporter>(
                         object->as<TransitionViewModelCondition>());
@@ -692,6 +697,14 @@ void File::registerScripts()
         ScriptingVM* vm = m_scriptingVM.get();
         if (vm != nullptr)
         {
+            // Set up the Data global (view model constructors) on the active
+            // VM, whether it was created here or supplied externally (e.g. by
+            // the CommandServer). Skip it when the VM's owner builds Data
+            // itself, as the editor does in Dart.
+            if (!vm->context()->initializesDataGlobalExternally())
+            {
+                initializeLuaData(vm->state(), m_ViewModels);
+            }
             for (auto scriptAsset : scripts)
             {
                 // At runtime, if the script is verified, add it to be
@@ -728,7 +741,6 @@ void File::makeScriptingVM()
     cleanupScriptingVM();
     auto context = std::make_unique<CPPRuntimeScriptingContext>(m_factory);
     m_scriptingVM = make_rcp<ScriptingVM>(std::move(context));
-    initializeLuaData(m_scriptingVM->state(), m_ViewModels);
 }
 
 lua_State* File::scriptingState()
@@ -814,9 +826,14 @@ std::unique_ptr<ArtboardInstance> File::instanceArtboard(Artboard* ab) const
     {
         auto artboardInstance = ab->instance();
 #ifdef WITH_RIVE_SCRIPTING
-        artboardInstance->scriptingVM(m_scriptingVM.get());
+        artboardInstance->scriptingVM(m_scriptingVM);
 #endif
         artboardInstance->file(ref_rcp(this));
+
+        // Global view model instances are no longer auto-created here. Callers
+        // (e.g. the high-level runtime's autoBind, or explicit
+        // setGlobalViewModelInstance) create and bind them on demand.
+
         return artboardInstance;
     }
     return nullptr;
@@ -1169,6 +1186,9 @@ rcp<ViewModelInstance> File::createViewModelInstance(ViewModel* viewModel) const
                 case ViewModelPropertyAssetImageBase::typeKey:
                     viewModelInstanceValue = new ViewModelInstanceAssetImage();
                     break;
+                case ViewModelPropertyAssetFontBase::typeKey:
+                    viewModelInstanceValue = new ViewModelInstanceAssetFont();
+                    break;
                 case ViewModelPropertySymbolListIndexBase::typeKey:
                     viewModelInstanceValue =
                         new ViewModelInstanceSymbolListIndex();
@@ -1287,13 +1307,50 @@ ViewModel* File::viewModel(std::string name)
     return nullptr;
 }
 
-ViewModel* File::viewModel(size_t index)
+ViewModel* File::viewModel(size_t index) const
 {
     if (index < m_ViewModels.size())
     {
         return m_ViewModels[index];
     }
     return nullptr;
+}
+
+uint32_t File::viewModelId(const std::string& name) const
+{
+    for (uint32_t i = 0; i < m_ViewModels.size(); i++)
+    {
+        auto vm = m_ViewModels[i];
+        if (vm != nullptr && vm->name() == name)
+        {
+            return i;
+        }
+    }
+    return static_cast<uint32_t>(m_ViewModels.size());
+}
+
+std::vector<ViewModel*> File::globalViewModels() const
+{
+    std::vector<ViewModel*> viewModels;
+    for (ViewModel* vm : m_ViewModels)
+    {
+        if (vm != nullptr && static_cast<ViewModelType>(vm->viewModelType()) ==
+                                 ViewModelType::global)
+        {
+            viewModels.push_back(vm);
+        }
+    }
+    return viewModels;
+}
+
+std::vector<std::string> File::globalViewModelNames() const
+{
+    std::vector<std::string> names;
+    for (ViewModel* vm : globalViewModels())
+    {
+        names.push_back(vm->name());
+    }
+    return names;
 }
 
 ViewModelRuntime* File::viewModelByIndex(size_t index) const

@@ -4,6 +4,8 @@
 #include "rive/generated/assets/script_asset_base.hpp"
 #include "rive/simple_array.hpp"
 #include <stdio.h>
+#include <cstdint>
+#include <functional>
 #ifdef WITH_RIVE_SCRIPTING
 #include <unordered_set>
 #endif

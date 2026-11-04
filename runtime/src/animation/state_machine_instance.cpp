@@ -4,6 +4,20 @@
 #include "rive/animation/animation_state.hpp"
 #include "rive/animation/any_state.hpp"
 #include "rive/animation/keyframe_interpolator.hpp"
+#include "rive/animation/keyframe.hpp"
+#include "rive/animation/keyframe_double.hpp"
+#include "rive/animation/keyframe_color.hpp"
+#include "rive/animation/keyframe_bool.hpp"
+#include "rive/animation/keyframe_string.hpp"
+#include "rive/animation/keyed_object.hpp"
+#include "rive/animation/keyed_property.hpp"
+#include "rive/animation/linear_animation.hpp"
+#include "rive/animation/linear_animation_instance.hpp"
+#include "rive/data_bind/bindable_property_number.hpp"
+#include "rive/data_bind/bindable_property_color.hpp"
+#include "rive/data_bind/bindable_property_boolean.hpp"
+#include "rive/data_bind/bindable_property_string.hpp"
+#include "rive/data_bind/converters/data_converter.hpp"
 #include "rive/animation/entry_state.hpp"
 #include "rive/animation/exit_state.hpp"
 #include "rive/animation/layer_state_flags.hpp"
@@ -63,6 +77,10 @@
 #include "rive/focus_data.hpp"
 #include "rive/node.hpp"
 #include "rive/semantic/semantic_data.hpp"
+#include "rive/view_model_type.hpp"
+#include "rive/viewmodel/viewmodel.hpp"
+#include "rive/file.hpp"
+#include "rive/data_bind/data_context.hpp"
 #include <array>
 #include <memory>
 #include <unordered_map>
@@ -151,6 +169,7 @@ public:
         assert(m_layer == nullptr);
         m_anyStateInstance =
             layer->anyState()->makeInstance(instance).release();
+        stateMachineInstance->buildStateKeyFrameBinds(m_anyStateInstance);
         m_layer = layer;
         changeState(m_layer->entryState());
     }
@@ -159,11 +178,13 @@ public:
     {
         if (m_stateFrom != m_anyStateInstance && m_stateFrom != m_currentState)
         {
+            m_stateMachineInstance->removeStateKeyFrameBinds(m_stateFrom);
             delete m_stateFrom;
         }
         m_stateFrom = nullptr;
         if (m_currentState != m_anyStateInstance)
         {
+            m_stateMachineInstance->removeStateKeyFrameBinds(m_currentState);
             delete m_currentState;
         }
         m_currentState = nullptr;
@@ -379,6 +400,7 @@ public:
         // Fire start events for the state we're changing to.
         if (m_currentState != nullptr)
         {
+            m_stateMachineInstance->buildStateKeyFrameBinds(m_currentState);
             fireEvents(StateMachineFireOccurance::atStart,
                        m_currentState->state()->events());
             performListenerActions(StateMachineFireOccurance::atStart,
@@ -551,6 +573,7 @@ public:
             if (m_stateFrom != m_anyStateInstance)
             {
                 // Old state from is done.
+                m_stateMachineInstance->removeStateKeyFrameBinds(m_stateFrom);
                 delete m_stateFrom;
             }
             m_stateFrom = outState;
@@ -1262,6 +1285,7 @@ public:
     virtual ~ListenerViewModelPropertyBinding();
     void addDirt(ComponentDirt value, bool recurse) override;
     void relinkDataBind() override;
+    ViewModelInstanceValue* value() { return m_viewModelInstanceValue.get(); }
 
 protected:
     ListenerViewModel* m_parent = nullptr;
@@ -1345,6 +1369,17 @@ public:
                     }
                 }
                 index++;
+            }
+        }
+        // A trigger fired before this bind (e.g. during script init) stays
+        // pending until the frame resets it; report it so it isn't lost.
+        for (auto& binding : m_propertyBindings)
+        {
+            auto value = binding->value();
+            if (value != nullptr && value->is<ViewModelInstanceTrigger>() &&
+                value->as<ViewModelInstanceTrigger>()->propertyValue() != 0)
+            {
+                reportToStateMachine(value);
             }
         }
     }
@@ -1479,6 +1514,17 @@ HitResult StateMachineInstance::updateListeners(Vec2D position,
             m_artboardInstance->originX() * m_artboardInstance->layoutWidth(),
             m_artboardInstance->originY() * m_artboardInstance->layoutHeight());
     }
+    // Invert the artboard's own rotation/scale (applied in drawInternal after
+    // the frame-origin translation) so listener hit-testing maps into content
+    // space. Mirrors the adjustment in hitTest(Vec2D).
+    if (m_artboardInstance->hasSelfTransform())
+    {
+        Mat2D inverse;
+        if (m_artboardInstance->selfTransform().invert(&inverse))
+        {
+            position = inverse * position;
+        }
+    }
     // First reset all listener groups before processing the events
     for (const auto& listenerGroup : m_listenerGroups)
     {
@@ -1528,6 +1574,17 @@ bool StateMachineInstance::hitTest(Vec2D position) const
         position -= Vec2D(
             m_artboardInstance->originX() * m_artboardInstance->layoutWidth(),
             m_artboardInstance->originY() * m_artboardInstance->layoutHeight());
+    }
+    // Invert the artboard's own rotation/scale (applied in drawInternal after
+    // the frame-origin translation) so the pointer maps into content space.
+    // Covers nested state machines too, which funnel through here.
+    if (m_artboardInstance->hasSelfTransform())
+    {
+        Mat2D inverse;
+        if (m_artboardInstance->selfTransform().invert(&inverse))
+        {
+            position = inverse * position;
+        }
     }
 
     for (const auto& hitShape : m_hitComponents)
@@ -2144,6 +2201,10 @@ StateMachineInstance::~StateMachineInstance()
         listenerGroup.reset();
     }
     deleteDataBinds();
+    // The keyframe-value binds were just deleted by deleteDataBinds(); drop the
+    // now-stale tracking pointers before the layers (and their LAIs/holders)
+    // are destroyed below.
+    m_stateKeyFrameDataBinds.clear();
     delete[] m_layers;
     for (auto pair : m_bindablePropertyInstances)
     {
@@ -2292,6 +2353,7 @@ bool StateMachineInstance::tryChangeState()
 
 void StateMachineInstance::applyEvents()
 {
+    m_eventsAppliedDuringLoop.clear();
     int maxIterations = 100;
     int currentIteration = 0;
     while ((m_reportedEvents.size() > 0 ||
@@ -2303,6 +2365,14 @@ void StateMachineInstance::applyEvents()
         m_reportingListenerViewModels = m_reportedListenerViewModels;
         m_reportedEvents.clear();
         m_reportedListenerViewModels.clear();
+        if (currentIteration > 1)
+        {
+            // These were reported during the loop, so no host has seen them
+            // yet; keep them visible until the next applyEvents.
+            m_eventsAppliedDuringLoop.insert(m_eventsAppliedDuringLoop.end(),
+                                             m_reportingEvents.begin(),
+                                             m_reportingEvents.end());
+        }
         this->notifyEventListeners(m_reportingEvents, nullptr);
         this->notifyListenerViewModels(m_reportingListenerViewModels);
     }
@@ -2573,6 +2643,12 @@ void StateMachineInstance::reset()
 
 bool StateMachineInstance::advanceAndApply(float seconds)
 {
+    return advanceAndApply(seconds, true);
+}
+
+bool StateMachineInstance::advanceAndApply(float seconds,
+                                           bool advanceViewModels)
+{
     RIVE_PROF_SCOPE_L(1)
     // Advancing by 0 could return false, when it shouldn't. Force keepGoing
     // to true.
@@ -2607,12 +2683,25 @@ bool StateMachineInstance::advanceAndApply(float seconds)
         {
             keepGoing = true;
         }
-        reset();
+        if (advanceViewModels)
+        {
+            reset(); // advancedDataContext() (VM consume) + artboard reset
+        }
+        else
+        {
+            m_artboardInstance->reset(); // artboard component reset only
+        }
 
         if (!m_artboardInstance->hasDirt(ComponentDirt::Components))
         {
             break;
         }
+    }
+    if (advanceViewModels)
+    {
+        // Advance detached scripted view models (created via scripts, not part
+        // of the bound view model tree) at the end of the frame.
+        m_artboardInstance->advanceScriptedViewModels();
     }
     return keepGoing || !m_reportedEvents.empty() ||
            !m_reportedListenerViewModels.empty();
@@ -2667,26 +2756,174 @@ SMITrigger* StateMachineInstance::getTrigger(const std::string& name) const
     return getNamedInput<StateMachineTrigger, SMITrigger>(name);
 }
 
+void StateMachineInstance::setViewModelInstance(
+    rcp<ViewModelInstance> viewModelInstance)
+{
+    if (viewModelInstance == nullptr)
+    {
+        return;
+    }
+    if (m_DataContext == nullptr)
+    {
+        m_DataContext = make_rcp<DataContext>(viewModelInstance);
+        m_DataContext->addDependentContainer(this);
+        return;
+    }
+    // The data context re-points every attached container (this state machine,
+    // the artboard, and any sibling state machines sharing the context) off the
+    // old main and onto the new one.
+    m_DataContext->setMainViewModelInstance(viewModelInstance);
+}
+
+bool StateMachineInstance::setGlobalViewModelInstance(
+    const std::string& name,
+    rcp<ViewModelInstance> viewModelInstance)
+{
+    // A null instance is allowed: it empties the named slot below.
+    auto file = m_artboardInstance->file();
+    if (file == nullptr)
+    {
+        return false;
+    }
+    // The slot is addressed by the named view model (its file index), not by
+    // the instance's own view model — so an override instance of a different
+    // view model can be placed on the slot.
+    uint32_t slotKey = file->viewModelId(name);
+    if (slotKey >= file->viewModelCount())
+    {
+        return false;
+    }
+    // Only global view models get a slot; a non-global name is not a valid
+    // global slot and must not be slotted.
+    auto slotViewModel = file->viewModel(slotKey);
+    if (slotViewModel == nullptr ||
+        static_cast<ViewModelType>(slotViewModel->viewModelType()) !=
+            ViewModelType::global)
+    {
+        return false;
+    }
+    if (m_DataContext == nullptr)
+    {
+        // Nothing to clear when there is no context yet; only create one when
+        // actually placing an instance.
+        if (viewModelInstance == nullptr)
+        {
+            return true;
+        }
+        m_DataContext = make_rcp<DataContext>(rcp<ViewModelInstance>(nullptr));
+        m_DataContext->addDependentContainer(this);
+    }
+    // The data context re-points every attached container off any previous
+    // instance occupying this slot and onto the new one (or empties the slot
+    // when the instance is null).
+    m_DataContext->setViewModelInstanceForSlot(slotKey, viewModelInstance);
+    return true;
+}
+
+void StateMachineInstance::bind()
+{
+    if (m_DataContext == nullptr)
+    {
+        // No data context yet: create an empty one so the view model
+        // instances it needs can be completed on the fly below.
+        m_DataContext = make_rcp<DataContext>(rcp<ViewModelInstance>(nullptr));
+        m_DataContext->addDependentContainer(this);
+    }
+    // Make sure every view model instance the data context needs exists before
+    // it is applied: the main instance plus one for each global view model.
+    // Any that are missing are created (completed) on the fly.
+    completeViewModelInstances();
+    // Apply the current data context: rebind the artboard and state machine
+    // data binds in a single pass.
+    m_artboardInstance->internalDataContext(m_DataContext);
+    internalDataContext(m_DataContext);
+}
+
+void StateMachineInstance::completeViewModelInstances()
+{
+    auto file = m_artboardInstance->file();
+    if (file == nullptr)
+    {
+        return;
+    }
+    // Ensure a main instance is present. The main is the entry not on the slot
+    // keys; if there is none, create the artboard's default and place it first.
+    if (m_DataContext->mainViewModelInstance() == nullptr)
+    {
+        auto main = file->createDefaultViewModelInstance(m_artboardInstance);
+        if (main != nullptr)
+        {
+            // setMainViewModelInstance re-points every attached container onto
+            // the new instance.
+            m_DataContext->setMainViewModelInstance(main);
+        }
+    }
+    // Ensure an instance exists for each global view model slot, creating any
+    // missing ones. Occupancy is checked by slot key, so a cross-view-model
+    // override already sitting in a slot is not treated as empty.
+    for (auto* viewModel : file->globalViewModels())
+    {
+        uint32_t slotKey = file->viewModelId(viewModel->name());
+        if (m_DataContext->instanceForSlot(slotKey) != nullptr)
+        {
+            continue;
+        }
+        auto instance = file->createDefaultViewModelInstance(viewModel);
+        if (instance != nullptr)
+        {
+            // setViewModelInstanceForSlot re-points every attached container
+            // onto the new instance.
+            m_DataContext->setViewModelInstanceForSlot(slotKey, instance);
+        }
+    }
+}
+
 void StateMachineInstance::bindViewModelInstance(
     rcp<ViewModelInstance> viewModelInstance)
 {
-    clearDataContext();
-    auto dataContext = make_rcp<DataContext>(viewModelInstance);
-    viewModelInstance->addDependent(this);
-    m_artboardInstance->clearDataContext();
-    m_artboardInstance->internalDataContext(dataContext);
-    internalDataContext(dataContext);
+    if (viewModelInstance == nullptr)
+    {
+        clearDataContext();
+        m_artboardInstance->unbind();
+        return;
+    }
+    setViewModelInstance(std::move(viewModelInstance));
+    bind();
+}
+
+rcp<ViewModelInstance> StateMachineInstance::globalViewModelInstance(
+    const std::string& name)
+{
+    // Pure read: returns the instance in the named slot only if one has been
+    // set/bound; never creates.
+    if (m_DataContext == nullptr)
+    {
+        return nullptr;
+    }
+    auto file = m_artboardInstance->file();
+    if (file == nullptr)
+    {
+        return nullptr;
+    }
+    return m_DataContext->instanceForSlot(file->viewModelId(name));
 }
 
 void StateMachineInstance::bindDataContext(rcp<DataContext> dataContext)
 {
     clearDataContext();
-    if (dataContext->viewModelInstance())
-    {
-        dataContext->viewModelInstance()->addDependent(this);
-    }
+    dataContext->addDependentContainer(this);
     m_artboardInstance->clearDataContext();
     m_artboardInstance->internalDataContext(dataContext);
+    internalDataContext(dataContext);
+}
+
+void StateMachineInstance::inheritDataContext(rcp<DataContext> dataContext)
+{
+    if (dataContext == nullptr)
+    {
+        return;
+    }
+    dataContext->addDependentContainer(this);
     internalDataContext(dataContext);
 }
 
@@ -2737,10 +2974,7 @@ void StateMachineInstance::clearDataContext()
 {
     if (m_DataContext)
     {
-        if (m_DataContext->viewModelInstance())
-        {
-            m_DataContext->viewModelInstance()->removeDependent(this);
-        }
+        m_DataContext->removeDependentContainer(this);
         m_DataContext = nullptr;
     }
     for (auto& listenerViewModel : m_listenerViewModels)
@@ -2842,11 +3076,16 @@ void StateMachineInstance::reportListenerViewModel(
 
 std::size_t StateMachineInstance::reportedEventCount() const
 {
-    return m_reportedEvents.size();
+    return m_eventsAppliedDuringLoop.size() + m_reportedEvents.size();
 }
 
 const EventReport StateMachineInstance::reportedEventAt(std::size_t index) const
 {
+    if (index < m_eventsAppliedDuringLoop.size())
+    {
+        return m_eventsAppliedDuringLoop[index];
+    }
+    index -= m_eventsAppliedDuringLoop.size();
     if (index >= m_reportedEvents.size())
     {
         return EventReport(nullptr, 0.0f);
@@ -3052,11 +3291,164 @@ BindablePropertyNumber* StateMachineInstance::findTransitionPropertyInstance(
     return nullptr;
 }
 
+// The BindableProperty value property key matching a keyframe's value type, or
+// 0 for unsupported keyframe types (e.g. id/uint), which are left unbound.
+static uint32_t keyFrameHolderPropertyKey(uint16_t keyFrameType)
+{
+    switch (keyFrameType)
+    {
+        case KeyFrameDoubleBase::typeKey:
+            return BindablePropertyNumberBase::propertyValuePropertyKey;
+        case KeyFrameColorBase::typeKey:
+            return BindablePropertyColorBase::propertyValuePropertyKey;
+        case KeyFrameBoolBase::typeKey:
+            return BindablePropertyBooleanBase::propertyValuePropertyKey;
+        case KeyFrameStringBase::typeKey:
+            return BindablePropertyStringBase::propertyValuePropertyKey;
+        default:
+            return 0;
+    }
+}
+
+// Creates the BindableProperty holder matching a keyframe's value type.
+static BindableProperty* makeKeyFrameValueHolder(uint16_t keyFrameType)
+{
+    switch (keyFrameType)
+    {
+        case KeyFrameDoubleBase::typeKey:
+            return new BindablePropertyNumber();
+        case KeyFrameColorBase::typeKey:
+            return new BindablePropertyColor();
+        case KeyFrameBoolBase::typeKey:
+            return new BindablePropertyBoolean();
+        case KeyFrameStringBase::typeKey:
+            return new BindablePropertyString();
+        default:
+            return nullptr;
+    }
+}
+
+void StateMachineInstance::buildStateKeyFrameBinds(StateInstance* stateInstance)
+{
+    if (stateInstance == nullptr || m_artboardInstance == nullptr)
+    {
+        return;
+    }
+    // Keyframe-targeting data binds are serialized on the source artboard (they
+    // target the shared, never-cloned keyframes), so resolve them from there.
+    const Artboard* source = m_artboardInstance->artboardSource();
+    if (source == nullptr)
+    {
+        return;
+    }
+
+    // Pre-index the source artboard's keyframe-targeting data binds once, keyed
+    // by their target keyframe. A keyframe holds a single value, so keep the
+    // first bind per target (emplace does not overwrite). This turns the
+    // per-keyframe lookup below from an O(numDataBinds) scan into O(1), so
+    // building a state's binds is O(numKeyFrames + numDataBinds) instead of
+    // O(numKeyFrames * numDataBinds). Filtering to keyframe targets keeps the
+    // index small (most data binds target components, not keyframes).
+    std::unordered_map<const Core*, DataBind*> firstBindByTarget;
+    for (auto dataBind : source->dataBinds())
+    {
+        auto target = dataBind->target();
+        if (target == nullptr || !target->is<KeyFrame>())
+        {
+            continue;
+        }
+        firstBindByTarget.emplace(target, dataBind);
+    }
+    if (firstBindByTarget.empty())
+    {
+        // No keyframe is data bound anywhere; skip the keyframe walk entirely.
+        return;
+    }
+
+    stateInstance->forEachAnimationInstance(
+        [this, stateInstance, &firstBindByTarget](
+            LinearAnimationInstance* animationInstance) {
+            const LinearAnimation* animation = animationInstance->animation();
+            if (animation == nullptr)
+            {
+                return;
+            }
+            for (size_t o = 0; o < animation->numKeyedObjects(); o++)
+            {
+                const KeyedObject* keyedObject = animation->getObject(o);
+                if (keyedObject == nullptr)
+                {
+                    continue;
+                }
+                for (size_t p = 0; p < keyedObject->numKeyedProperties(); p++)
+                {
+                    const KeyedProperty* keyedProperty =
+                        keyedObject->getProperty(p);
+                    if (keyedProperty == nullptr)
+                    {
+                        continue;
+                    }
+                    for (size_t k = 0; k < keyedProperty->numKeyFrames(); k++)
+                    {
+                        KeyFrame* keyframe = keyedProperty->getKeyFrame(k);
+                        uint32_t holderPropertyKey =
+                            keyFrameHolderPropertyKey(keyframe->coreType());
+                        if (holderPropertyKey == 0)
+                        {
+                            continue;
+                        }
+                        auto found = firstBindByTarget.find(keyframe);
+                        if (found == firstBindByTarget.end())
+                        {
+                            continue;
+                        }
+                        DataBind* dataBind = found->second;
+                        auto holder =
+                            makeKeyFrameValueHolder(keyframe->coreType());
+                        animationInstance->addKeyFrameValueHolder(keyframe,
+                                                                  holder);
+                        auto dataBindClone =
+                            static_cast<DataBind*>(dataBind->clone());
+                        dataBindClone->file(dataBind->file());
+                        dataBindClone->target(holder);
+                        dataBindClone->propertyKey(holderPropertyKey);
+                        dataBindClone->initialize();
+                        if (dataBind->converter() != nullptr)
+                        {
+                            dataBindClone->converter(dataBind->converter()
+                                                         ->clone()
+                                                         ->as<DataConverter>());
+                        }
+                        addDataBind(dataBindClone);
+                        m_stateKeyFrameDataBinds[stateInstance].push_back(
+                            dataBindClone);
+                    }
+                }
+            }
+        });
+}
+
+void StateMachineInstance::removeStateKeyFrameBinds(
+    StateInstance* stateInstance)
+{
+    auto it = m_stateKeyFrameDataBinds.find(stateInstance);
+    if (it == m_stateKeyFrameDataBinds.end())
+    {
+        return;
+    }
+    for (auto* dataBind : it->second)
+    {
+        removeDataBind(dataBind);
+        delete dataBind;
+    }
+    m_stateKeyFrameDataBinds.erase(it);
+}
+
 bool StateMachineInstance::hasFocusNodes()
 {
     auto* fm = focusManager();
     assert(fm != nullptr);
-    return !fm->rootNodes().empty();
+    return fm->hasFocusableContent();
 }
 
 bool StateMachineInstance::focusNext()

@@ -69,71 +69,73 @@ std::unique_ptr<D3D12DrawVertexShader> D3D12PipelineManager::
         case DrawType::midpointFanPatches:
         case DrawType::midpointFanCenterAAPatches:
         case DrawType::outerCurvePatches:
-            result->m_layoutDesc[0] = {
+            result->m_layoutDesc.push_back({
                 GLSL_a_patchVertexData,
                 0,
                 DXGI_FORMAT_R32G32B32A32_FLOAT,
                 PATCH_VERTEX_DATA_SLOT,
                 D3D12_APPEND_ALIGNED_ELEMENT,
                 D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                0};
-            result->m_layoutDesc[1] = {
+                0,
+            });
+            result->m_layoutDesc.push_back({
                 GLSL_a_mirroredVertexData,
                 0,
                 DXGI_FORMAT_R32G32B32A32_FLOAT,
                 PATCH_VERTEX_DATA_SLOT,
                 D3D12_APPEND_ALIGNED_ELEMENT,
                 D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                0};
-            result->m_vertexAttribCount = 2;
+                0,
+            });
             break;
         case DrawType::interiorTriangulation:
-        case DrawType::atlasBlit:
-            result->m_layoutDesc[0] = {
+        case DrawType::featherAtlasBlit:
+            result->m_layoutDesc.push_back({
                 GLSL_a_triangleVertex,
                 0,
                 DXGI_FORMAT_R32G32B32_FLOAT,
                 TRIANGLE_VERTEX_DATA_SLOT,
                 0,
                 D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                0};
-            result->m_vertexAttribCount = 1;
+                0,
+            });
             break;
         case DrawType::imageRect:
-            result->m_layoutDesc[0] = {
+            result->m_layoutDesc.push_back({
                 GLSL_a_imageRectVertex,
                 0,
                 DXGI_FORMAT_R32G32B32A32_FLOAT,
                 IMAGE_RECT_VERTEX_DATA_SLOT,
                 0,
                 D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                0};
-            result->m_vertexAttribCount = 1;
+                0,
+            });
             break;
         case DrawType::imageMesh:
-            result->m_layoutDesc[0] = {
+            result->m_layoutDesc.push_back({
                 GLSL_a_position,
                 0,
                 DXGI_FORMAT_R32G32_FLOAT,
                 IMAGE_MESH_VERTEX_DATA_SLOT,
                 D3D12_APPEND_ALIGNED_ELEMENT,
                 D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                0};
-            result->m_layoutDesc[1] = {
+                0,
+            });
+            result->m_layoutDesc.push_back({
                 GLSL_a_texCoord,
                 0,
                 DXGI_FORMAT_R32G32_FLOAT,
                 IMAGE_MESH_UV_DATA_SLOT,
                 D3D12_APPEND_ALIGNED_ELEMENT,
                 D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                0};
-            result->m_vertexAttribCount = 2;
+                0,
+            });
             break;
         case DrawType::renderPassResolve:
-            result->m_vertexAttribCount = 0;
             break;
         case DrawType::msaaStrokes:
         case DrawType::msaaMidpointFanBorrowedCoverage:
+        case DrawType::msaaDynamicMidpointFans:
         case DrawType::msaaMidpointFans:
         case DrawType::msaaMidpointFanStencilReset:
         case DrawType::msaaMidpointFanPathsStencil:
@@ -142,6 +144,44 @@ std::unique_ptr<D3D12DrawVertexShader> D3D12PipelineManager::
         case DrawType::clipReset:
         case DrawType::renderPassInitialize:
             RIVE_UNREACHABLE();
+    }
+
+    // Image draws receive their data as instanced vertex attributes, all from
+    // IMAGE_DRAW_INSTANCE_DATA_SLOT. See gpu::ImageDrawInstance.
+    if (gpu::DrawTypeIsImageDraw(drawType))
+    {
+        result->m_layoutDesc.push_back(
+            {GLSL_a_imageDrawViewMatrix,
+             0,
+             DXGI_FORMAT_R32G32B32A32_FLOAT,
+             IMAGE_DRAW_INSTANCE_DATA_SLOT,
+             D3D12_APPEND_ALIGNED_ELEMENT,
+             D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+             1});
+        result->m_layoutDesc.push_back(
+            {GLSL_a_imageDrawClipRectInverseMatrix,
+             0,
+             DXGI_FORMAT_R32G32B32A32_FLOAT,
+             IMAGE_DRAW_INSTANCE_DATA_SLOT,
+             D3D12_APPEND_ALIGNED_ELEMENT,
+             D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+             1});
+        result->m_layoutDesc.push_back(
+            {GLSL_a_imageDrawTranslates,
+             0,
+             DXGI_FORMAT_R32G32B32A32_FLOAT,
+             IMAGE_DRAW_INSTANCE_DATA_SLOT,
+             D3D12_APPEND_ALIGNED_ELEMENT,
+             D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+             1});
+        result->m_layoutDesc.push_back(
+            {GLSL_a_imageDrawPacked,
+             0,
+             DXGI_FORMAT_R32G32B32A32_UINT,
+             IMAGE_DRAW_INSTANCE_DATA_SLOT,
+             D3D12_APPEND_ALIGNED_ELEMENT,
+             D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+             1});
     }
 
     result->m_shader = blob;
@@ -179,7 +219,7 @@ std::unique_ptr<D3D12Pipeline> D3D12PipelineManager::linkPipeline(
         case DrawType::midpointFanCenterAAPatches:
         case DrawType::outerCurvePatches:
         case DrawType::interiorTriangulation:
-        case DrawType::atlasBlit:
+        case DrawType::featherAtlasBlit:
             rasterDesc.CullMode = D3D12_CULL_MODE_BACK;
             break;
         case DrawType::imageRect:
@@ -189,6 +229,7 @@ std::unique_ptr<D3D12Pipeline> D3D12PipelineManager::linkPipeline(
             break;
         case DrawType::msaaStrokes:
         case DrawType::msaaMidpointFanBorrowedCoverage:
+        case DrawType::msaaDynamicMidpointFans:
         case DrawType::msaaMidpointFans:
         case DrawType::msaaMidpointFanStencilReset:
         case DrawType::msaaMidpointFanPathsStencil:
@@ -217,7 +258,7 @@ std::unique_ptr<D3D12Pipeline> D3D12PipelineManager::linkPipeline(
             : 0;
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-    psoDesc.InputLayout = {vs.m_layoutDesc, vs.m_vertexAttribCount};
+    psoDesc.InputLayout = {vs.m_layoutDesc.data(), vs.m_layoutDesc.size()};
     psoDesc.pRootSignature = m_rootSignature.Get();
     psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs.m_shader.Get());
     psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps.m_shader.Get());
@@ -382,7 +423,7 @@ void D3D12PipelineManager::compileGradientPipeline()
         IID_PPV_ARGS(&m_gradientPipeline)));
 }
 
-void D3D12PipelineManager::compileAtlasPipeline()
+void D3D12PipelineManager::compileFeatherAtlasPipeline()
 {
 
     D3D12_INPUT_ELEMENT_DESC layoutDesc[2];
@@ -442,7 +483,7 @@ void D3D12PipelineManager::compileAtlasPipeline()
 
     VERIFY_OK(device()->CreateGraphicsPipelineState(
         &psoDesc,
-        IID_PPV_ARGS(&m_atlasStrokePipeline)));
+        IID_PPV_ARGS(&m_featherAtlasStrokePipeline)));
 
     psoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
     psoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
@@ -453,6 +494,6 @@ void D3D12PipelineManager::compileAtlasPipeline()
 
     VERIFY_OK(device()->CreateGraphicsPipelineState(
         &psoDesc,
-        IID_PPV_ARGS(&m_atlasFillPipeline)));
+        IID_PPV_ARGS(&m_featherAtlasFillPipeline)));
 }
 } // namespace rive::gpu

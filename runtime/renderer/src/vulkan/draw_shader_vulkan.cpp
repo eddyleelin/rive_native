@@ -54,7 +54,7 @@ DrawShaderVulkan::DrawShaderVulkan(Type type,
                     fragCode = spirv::draw_interior_triangles_frag;
                     break;
 
-                case DrawType::atlasBlit:
+                case DrawType::featherAtlasBlit:
                     vertCode = spirv::draw_atlas_blit_vert;
                     fragCode = spirv::draw_atlas_blit_frag;
                     break;
@@ -72,6 +72,7 @@ DrawShaderVulkan::DrawShaderVulkan(Type type,
                 case DrawType::imageRect:
                 case DrawType::msaaStrokes:
                 case DrawType::msaaMidpointFanBorrowedCoverage:
+                case DrawType::msaaDynamicMidpointFans:
                 case DrawType::msaaMidpointFans:
                 case DrawType::msaaMidpointFanStencilReset:
                 case DrawType::msaaMidpointFanPathsStencil:
@@ -106,7 +107,7 @@ DrawShaderVulkan::DrawShaderVulkan(Type type,
                             : spirv::atomic_draw_interior_triangles_frag;
                     break;
 
-                case DrawType::atlasBlit:
+                case DrawType::featherAtlasBlit:
                     vertCode = spirv::atomic_draw_atlas_blit_vert;
                     fragCode =
                         fixedFunctionColorOutput
@@ -149,6 +150,7 @@ DrawShaderVulkan::DrawShaderVulkan(Type type,
 
                 case DrawType::msaaStrokes:
                 case DrawType::msaaMidpointFanBorrowedCoverage:
+                case DrawType::msaaDynamicMidpointFans:
                 case DrawType::msaaMidpointFans:
                 case DrawType::msaaMidpointFanStencilReset:
                 case DrawType::msaaMidpointFanPathsStencil:
@@ -198,7 +200,7 @@ DrawShaderVulkan::DrawShaderVulkan(Type type,
                             : spirv::draw_clockwise_interior_triangles_frag;
                     break;
 
-                case DrawType::atlasBlit:
+                case DrawType::featherAtlasBlit:
                     vertCode = spirv::draw_clockwise_atlas_blit_vert;
                     fragCode =
                         fixedFunctionColorOutput
@@ -217,6 +219,7 @@ DrawShaderVulkan::DrawShaderVulkan(Type type,
                 case DrawType::imageRect:
                 case DrawType::msaaStrokes:
                 case DrawType::msaaMidpointFanBorrowedCoverage:
+                case DrawType::msaaDynamicMidpointFans:
                 case DrawType::msaaMidpointFans:
                 case DrawType::msaaMidpointFanStencilReset:
                 case DrawType::msaaMidpointFanPathsStencil:
@@ -322,7 +325,7 @@ DrawShaderVulkan::DrawShaderVulkan(Type type,
                     }
                     break;
 
-                case DrawType::atlasBlit:
+                case DrawType::featherAtlasBlit:
                     vertCode = spirv::draw_clockwise_atomic_atlas_blit_vert;
                     fragCode =
                         !drawUsesAdvancedBlend
@@ -360,6 +363,7 @@ DrawShaderVulkan::DrawShaderVulkan(Type type,
                 case DrawType::imageRect:
                 case DrawType::msaaStrokes:
                 case DrawType::msaaMidpointFanBorrowedCoverage:
+                case DrawType::msaaDynamicMidpointFans:
                 case DrawType::msaaMidpointFans:
                 case DrawType::msaaMidpointFanStencilReset:
                 case DrawType::msaaMidpointFanPathsStencil:
@@ -383,6 +387,7 @@ DrawShaderVulkan::DrawShaderVulkan(Type type,
                 case DrawType::msaaOuterCubics:
                 case DrawType::msaaStrokes:
                 case DrawType::msaaMidpointFanBorrowedCoverage:
+                case DrawType::msaaDynamicMidpointFans:
                 case DrawType::msaaMidpointFans:
                 case DrawType::msaaMidpointFanStencilReset:
                 case DrawType::msaaMidpointFanPathsStencil:
@@ -407,7 +412,7 @@ DrawShaderVulkan::DrawShaderVulkan(Type type,
                     RIVE_UNREACHABLE();
                     break;
 
-                case DrawType::atlasBlit:
+                case DrawType::featherAtlasBlit:
                     vertCode =
                         enums::is_flag_set(shaderFeatures,
                                            ShaderFeatures::ENABLE_CLIP_RECT)

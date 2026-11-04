@@ -6,6 +6,7 @@ import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'dart:ui_web' as ui_web;
+import 'package:meta/meta.dart' show internal, visibleForTesting;
 import 'package:web/web.dart' as web;
 
 import 'package:flutter/widgets.dart' hide Key;
@@ -17,6 +18,7 @@ import 'package:rive_native/src/web/rive_audio_web.dart';
 import 'package:rive_native/src/web/rive_focus_web.dart';
 import 'package:rive_native/src/web/rive_semantic_web.dart';
 import 'package:rive_native/src/web/rive_luau_web.dart';
+import 'package:rive_native/src/web/rive_pathops_web.dart';
 import 'package:rive_native/src/web/rive_renderer_web.dart';
 import 'package:rive_native/src/web/rive_text_web.dart';
 import 'package:rive_native/src/web/scripting_workspace_web.dart';
@@ -58,15 +60,45 @@ base class _WebRenderTexture extends RenderTexture {
   js.JSAny? jsRenderContextPtr;
   final String rendererId;
   final html.HTMLCanvasElement canvasElement;
+  web.ResizeObserver? _resizeObserver;
+
+  /// The raw WebGL2 context from the glue's renderer object, cached because
+  /// [isReady] runs every frame. Nulled on release.
+  js.JSObject? _gl;
+
+  static final js.JSString _isContextLostKey = 'isContextLost'.toJS;
 
   @override
-  bool get isReady => canvasElement.isConnected;
+  bool get isReady => canvasElement.isConnected && !_contextLost;
 
+  /// Whether the WebGL context backing this texture is gone — released, or
+  /// evicted by the browser (context pressure, GPU reset). GL calls against
+  /// a lost context are silently ignored, so painting it renders nothing.
+  bool get _contextLost {
+    final gl = _gl;
+    return gl == null || gl.callMethod<js.JSBoolean>(_isContextLostKey).toDart;
+  }
+
+  /// Disposed textures kept for reuse. A pooled texture keeps its canvas and
+  /// live WebGL2 context, and browsers cap live contexts (~16 per process) —
+  /// so the pool is bounded and dispose genuinely releases beyond the cap.
+  /// The cap covers realistic churn bursts (route pops, editor pane
+  /// closures) without pinning a whole page's high-water mark forever.
+  static const int _maxPoolSize = 4;
   static final List<_WebRenderTexture> _pool = [];
 
   static _WebRenderTexture make() {
-    if (_pool.isNotEmpty) {
-      return _pool.removeAt(0);
+    while (_pool.isNotEmpty) {
+      final pooled = _pool.removeAt(0);
+      if (!pooled._contextLost) {
+        _debugLogTexture('${pooled.rendererId} reused from pool');
+        return pooled;
+      }
+      // The browser evicted this context while the texture sat idle in the
+      // pool; reusing it would render nothing forever. Purge it and fall
+      // through to a fresh texture.
+      pooled._release();
+      _debugLogTexture('${pooled.rendererId} purged from pool (context lost)');
     }
     final id = '_rr_${_canvasCounter++}';
     final canvasElement = html.HTMLCanvasElement()
@@ -97,40 +129,133 @@ base class _WebRenderTexture extends RenderTexture {
 
     // Connect the observer.
     observer.observe(canvasElement);
+    texture._resizeObserver = observer;
 
+    _debugLogTexture('$id created');
     return texture;
   }
 
   _WebRenderTexture(this.jsRenderContext, this.canvasElement, this.rendererId) {
     jsRenderContextPtr = jsRenderContext?.getProperty('_ptr'.toJS);
+    final gl = jsRenderContext?.getProperty('_gl'.toJS);
+    _gl = gl != null && gl.isA<js.JSObject>() ? gl as js.JSObject : null;
     ui_web.platformViewRegistry.registerViewFactory(rendererId, (int viewId) {
       return canvasElement;
     });
   }
 
+  // Last backing policy pushed to the JS renderer (fixedWidth, fixedHeight,
+  // scaleX, scaleY, maxLogical), so repeated syncs only cross into JS when
+  // something changed.
+  (int, int, double, double, double)? _backingPolicy;
+
+  /// Writes the backing policy that the wasm glue's `clearRenderer` sizes the
+  /// canvas backing store from each frame (see
+  /// `native/platform/wasm/init.js`). Returns whether the policy changed.
+  bool setBackingPolicy({
+    required int fixedWidth,
+    required int fixedHeight,
+    required double scaleX,
+    required double scaleY,
+    required double maxLogical,
+  }) {
+    final ctx = jsRenderContext;
+    if (ctx == null) {
+      // No renderer to apply to — leave the change unconsumed (and unkicked)
+      // so a later sync, e.g. after a context is recreated, pushes it.
+      return false;
+    }
+    final policy = (fixedWidth, fixedHeight, scaleX, scaleY, maxLogical);
+    if (policy == _backingPolicy) {
+      return false;
+    }
+    _backingPolicy = policy;
+    ctx.setProperty('_fixedWidth'.toJS, fixedWidth.toJS);
+    ctx.setProperty('_fixedHeight'.toJS, fixedHeight.toJS);
+    ctx.setProperty('_backingScaleX'.toJS, scaleX.toJS);
+    ctx.setProperty('_backingScaleY'.toJS, scaleY.toJS);
+    ctx.setProperty('_maxBackingLogical'.toJS, maxLogical.toJS);
+    return true;
+  }
+
+  /// Restores the default backing policy (layout × DPR, uncapped) so a pooled
+  /// renderer cannot leak one consumer's policy to the next.
+  void resetBackingPolicy() => setBackingPolicy(
+        fixedWidth: 0,
+        fixedHeight: 0,
+        scaleX: 1,
+        scaleY: 1,
+        maxLogical: 0,
+      );
+
   @override
   void dispose() {
+    final alreadyDisposed = isDisposed || _pool.contains(this);
+    assert(!alreadyDisposed, 'RenderTexture disposed twice');
+    if (alreadyDisposed) {
+      return;
+    }
     canvasElement.width = canvasElement.height = 0;
-    _pool.add(this);
+    resetBackingPolicy();
+    // A lost context never recovers on its own — pooling it would hand a
+    // dead texture to the next consumer.
+    final contextLost = _contextLost;
+    if (_pool.length < _maxPoolSize && !contextLost) {
+      _pool.add(this);
+      _debugLogTexture('$rendererId disposed → pooled');
+      return;
+    }
+    _release();
+    _debugLogTexture('$rendererId disposed → released '
+        '(${contextLost ? 'context lost' : 'pool full'})');
+  }
 
-    // Do we ever want to delete renderers? For now we just return them to the
-    // pool.
+  /// Genuinely destroys this texture: the native renderer, the browser's
+  /// WebGL context, the resize observer, and the canvas element. The
+  /// platform-view registration for [rendererId] keeps a closure over the
+  /// canvas — registrations cannot be unregistered — but the id is never
+  /// reused for another canvas.
+  void _release() {
+    _resizeObserver?.disconnect();
+    _resizeObserver = null;
+    final ctx = jsRenderContext;
+    if (ctx != null) {
+      RiveWasm.releaseRenderer.callAsFunction(null, ctx);
+    }
+    jsRenderContext = null;
+    jsRenderContextPtr = null;
+    _gl = null;
+    canvasElement.remove();
+  }
 
-    // RiveWasm.deleteRenderer.callAsFunction(null, jsRenderContextPtr);
-    // jsRenderContext = null;
-    // jsRenderContextPtr = null;
+  /// Destroys all pooled textures. With [RiveWasm.releaseOffscreenGL] this
+  /// lets an idle page drop to zero live WebGL contexts.
+  static void releasePool() {
+    for (final texture in _pool) {
+      texture._release();
+    }
+    _pool.clear();
   }
 
   @override
-  Widget widget({RenderTexturePainter? painter, flutter.Key? key}) => Stack(
+  Widget widget({
+    RenderTexturePainter? painter,
+    RenderResolution resolution = RenderResolution.defaultValue,
+    flutter.Key? key,
+  }) =>
+      Stack(
         children: [
           Positioned.fill(child: HtmlElementView(viewType: rendererId)),
-          Positioned.fill(child: _RiveNativeWebView(this, painter, key: key)),
+          Positioned.fill(
+              child: _RiveNativeWebView(this, painter, resolution, key: key)),
         ],
       );
 
   @override
   bool clear(Color color, [bool write = true]) {
+    if (isDisposed) {
+      return false;
+    }
     RiveWasm.clearRenderer
         // ignore: deprecated_member_use
         .callAsFunction(null, jsRenderContext, color.value.toJS);
@@ -139,6 +264,9 @@ base class _WebRenderTexture extends RenderTexture {
 
   @override
   bool flush(double devicePixelRatio) {
+    if (isDisposed) {
+      return false;
+    }
     RiveWasm.flushRenderer.callAsFunction(null, jsRenderContextPtr);
     return true;
   }
@@ -164,9 +292,10 @@ base class _WebRenderTexture extends RenderTexture {
     return completer.future;
   }
 
-  // TODO (Gordon): might want to revisit this if we ever destroy renderers and not just return them to the pool.
+  // Pooled textures are not "disposed" — the same object is handed back out
+  // by make(). Only a genuine release is terminal.
   @override
-  bool get isDisposed => false;
+  bool get isDisposed => jsRenderContext == null;
 
   @override
   int get actualWidth => canvasElement.width;
@@ -180,6 +309,41 @@ base class _WebRenderTexture extends RenderTexture {
 
   @override
   bool needsResize(int width, int height) => false;
+}
+
+/// Forces the loss of the WebGL context backing [texture] via the
+/// `WEBGL_lose_context` extension — simulates the browser evicting the
+/// context under context pressure.
+@visibleForTesting
+void debugLoseWebGLContext(RenderTexture? texture) {
+  if (texture is! _WebRenderTexture) return;
+  final ext = texture._gl?.callMethod<js.JSAny?>(
+    'getExtension'.toJS,
+    'WEBGL_lose_context'.toJS,
+  );
+  if (ext != null && ext.isA<js.JSObject>()) {
+    (ext as js.JSObject).callMethod<js.JSAny?>('loseContext'.toJS);
+  }
+}
+
+/// The bound on the web render-texture reuse pool, for lifecycle tests.
+@visibleForTesting
+int get debugWebRenderTexturePoolCap => _WebRenderTexture._maxPoolSize;
+
+/// Logs a render-texture lifecycle event with live-context bookkeeping when
+/// [RiveNative.debugRenderTextureLogging] is on.
+void _debugLogTexture(String message) {
+  if (!RiveNative.debugRenderTextureLogging) {
+    return;
+  }
+  var live = -1;
+  final fn = RiveWasm.module?.getProperty('liveGLContextCount'.toJS);
+  if (fn != null && fn.isA<js.JSFunction>()) {
+    live =
+        ((fn as js.JSFunction).callAsFunction(null) as js.JSNumber).toDartInt;
+  }
+  debugPrint('[Rive] $message — live contexts: $live '
+      '(pooled: ${_WebRenderTexture._pool.length})');
 }
 
 /// Extracts the WebGL context handle from a web [RenderTexture].
@@ -257,8 +421,15 @@ class WasmBuffer {
 }
 
 class RiveWasm {
+  /// The linked emscripten module. Exposed so tests can reach raw `_name`
+  /// exports (e.g. debug-build object counters) the way FFI tests reach
+  /// `DynamicLibraryHelper.nativeLib`.
+  @internal
+  static js.JSObject? module;
+
   static late js.JSFunction makeRenderer;
-  static late js.JSFunction deleteRenderer;
+  static late js.JSFunction releaseRenderer;
+  static late js.JSFunction releaseOffscreenGL;
   static late js.JSFunction deleteFlutterRenderer;
   static late js.JSFunction flushRenderer;
   static late js.JSFunction clearRenderer;
@@ -474,6 +645,8 @@ class RiveWasm {
   static late js.JSFunction triggerVMITriggerRuntime;
   static late js.JSFunction vmiRuntimeGetAssetImageProperty;
   static late js.JSFunction setVMIAssetImageRuntimeValue;
+  static late js.JSFunction vmiRuntimeGetAssetFontProperty;
+  static late js.JSFunction setVMIAssetFontRuntimeValue;
   static late js.JSFunction vmiRuntimeGetListProperty;
   static late js.JSFunction getVMIListRuntimeSize;
   static late js.JSFunction vmiListRuntimeAddInstance;
@@ -539,10 +712,15 @@ class RiveWasm {
   static late js.JSFunction riveArtboardAdvance;
   static late js.JSFunction riveArtboardGetOpacity;
   static late js.JSFunction riveArtboardSetOpacity;
+  static late js.JSFunction riveArtboardSetHostOpacity;
   static late js.JSFunction riveArtboardGetWidth;
   static late js.JSFunction riveArtboardSetWidth;
   static late js.JSFunction riveArtboardGetHeight;
   static late js.JSFunction riveArtboardSetHeight;
+  static late js.JSFunction riveArtboardGetOriginX;
+  static late js.JSFunction riveArtboardSetOriginX;
+  static late js.JSFunction riveArtboardGetOriginY;
+  static late js.JSFunction riveArtboardSetOriginY;
   static late js.JSFunction riveArtboardGetOriginalWidth;
   static late js.JSFunction riveArtboardGetOriginalHeight;
   static late js.JSFunction riveArtboardStateMachineDefault;
@@ -625,11 +803,15 @@ class RiveWasm {
   static late js.JSFunction makeFlutterRenderImage;
   static late js.JSFunction flutterRenderImageId;
   static late js.JSFunction riveDataContext;
+  static late js.JSFunction riveDataContextFromInstances;
+  static late js.JSFunction dataContextViewModelInstanceAt;
+  static late js.JSFunction dataContextFromViewModelInstancePointers;
   static late js.JSFunction deleteDataContext;
   static late js.JSFunction deleteViewModelInstance;
   static late js.JSFunction deleteViewModelInstanceValue;
   static late js.JSFunction riveDataContextViewModelInstance;
   static late js.JSFunction viewModelInstancePropertyValue;
+  static late js.JSFunction pruneViewModelInstanceToProperties;
   static late js.JSFunction viewModelInstanceListItemViewModel;
   static late js.JSFunction viewModelInstanceListSize;
   static late js.JSFunction viewModelInstanceReferenceViewModel;
@@ -640,6 +822,7 @@ class RiveWasm {
   static late js.JSFunction setViewModelInstanceTriggerValue;
   static late js.JSFunction setViewModelInstanceAssetValue;
   static late js.JSFunction viewModelInstanceAssetImageResolveRuntimeIndex;
+  static late js.JSFunction viewModelInstanceAssetFontResolveRuntimeIndex;
   static late js.JSFunction setViewModelInstanceArtboardValue;
   static late js.JSFunction setViewModelInstanceAdvanced;
   static late js.JSFunction setViewModelInstanceEnumValue;
@@ -746,6 +929,8 @@ class RiveWasm {
   static late js.JSFunction rawTextUndo;
   static late js.JSFunction rawTextRedo;
   static late js.JSFunction rawTextSelectWord;
+  static late js.JSFunction rawTextHasSelection;
+  static late js.JSFunction rawTextClearSelection;
   static late js.JSFunction rawTextInputMeasure;
   static late js.JSFunction freeString;
   static late js.JSFunction riveAdvanceFrameId;
@@ -780,8 +965,10 @@ class RiveWasm {
   }
 
   static void link(js.JSObject module) {
+    RiveWasm.module = module;
     makeRenderer = module['makeRenderer'] as js.JSFunction;
-    deleteRenderer = module['deleteRenderer'] as js.JSFunction;
+    releaseRenderer = module['releaseRenderer'] as js.JSFunction;
+    releaseOffscreenGL = module['releaseOffscreenGL'] as js.JSFunction;
     flushRenderer = module['flushRenderer'] as js.JSFunction;
     clearRenderer = module['clearRenderer'] as js.JSFunction;
     saveRenderer = module['saveRenderer'] as js.JSFunction;
@@ -958,6 +1145,8 @@ class RiveWasm {
         module['_triggerVMITriggerRuntime'] as js.JSFunction;
     vmiRuntimeGetAssetImageProperty =
         module['_vmiRuntimeGetAssetImageProperty'] as js.JSFunction;
+    vmiRuntimeGetAssetFontProperty =
+        module['_vmiRuntimeGetAssetFontProperty'] as js.JSFunction;
     vmiRuntimeGetListProperty =
         module['_vmiRuntimeGetListProperty'] as js.JSFunction;
     getVMIListRuntimeSize = module['_getVMIListRuntimeSize'] as js.JSFunction;
@@ -974,6 +1163,8 @@ class RiveWasm {
     vmiListRuntimeSwap = module['_vmiListRuntimeSwap'] as js.JSFunction;
     setVMIAssetImageRuntimeValue =
         module['_setVMIAssetImageRuntimeValue'] as js.JSFunction;
+    setVMIAssetFontRuntimeValue =
+        module['_setVMIAssetFontRuntimeValue'] as js.JSFunction;
     vmiRuntimeGetArtboardProperty =
         module['_vmiRuntimeGetArtboardProperty'] as js.JSFunction;
     setVMIArtboardRuntimeValue =
@@ -989,8 +1180,7 @@ class RiveWasm {
     deleteVMIRuntime = module['_deleteVMIRuntime'] as js.JSFunction;
     deleteViewModelRuntime = module['_deleteViewModelRuntime'] as js.JSFunction;
     artboardDraw = module['_artboardDraw'] as js.JSFunction;
-    artboardDrawCanvases =
-        module['_artboardDrawCanvases'] as js.JSFunction;
+    artboardDrawCanvases = module['_artboardDrawCanvases'] as js.JSFunction;
     artboardGetDrawCanvasLuauState =
         module['_artboardGetDrawCanvasLuauState'] as js.JSFunction;
     artboardDrawInternal = module['_artboardDrawInternal'] as js.JSFunction;
@@ -1054,10 +1244,16 @@ class RiveWasm {
     riveArtboardAdvance = module['_riveArtboardAdvance'] as js.JSFunction;
     riveArtboardGetOpacity = module['_riveArtboardGetOpacity'] as js.JSFunction;
     riveArtboardSetOpacity = module['_riveArtboardSetOpacity'] as js.JSFunction;
+    riveArtboardSetHostOpacity =
+        module['_riveArtboardSetHostOpacity'] as js.JSFunction;
     riveArtboardGetWidth = module['_riveArtboardGetWidth'] as js.JSFunction;
     riveArtboardSetWidth = module['_riveArtboardSetWidth'] as js.JSFunction;
     riveArtboardGetHeight = module['_riveArtboardGetHeight'] as js.JSFunction;
     riveArtboardSetHeight = module['_riveArtboardSetHeight'] as js.JSFunction;
+    riveArtboardGetOriginX = module['_riveArtboardGetOriginX'] as js.JSFunction;
+    riveArtboardSetOriginX = module['_riveArtboardSetOriginX'] as js.JSFunction;
+    riveArtboardGetOriginY = module['_riveArtboardGetOriginY'] as js.JSFunction;
+    riveArtboardSetOriginY = module['_riveArtboardSetOriginY'] as js.JSFunction;
     riveArtboardGetOriginalWidth =
         module['_riveArtboardGetOriginalWidth'] as js.JSFunction;
     riveArtboardGetOriginalHeight =
@@ -1125,8 +1321,7 @@ class RiveWasm {
     stateMachineInstanceSubmitGamepadsFromBuffer =
         module['_stateMachineInstanceSubmitGamepadsFromBuffer']
             as js.JSFunction;
-    makeGamepadInvocation =
-        module['_makeGamepadInvocation'] as js.JSFunction;
+    makeGamepadInvocation = module['_makeGamepadInvocation'] as js.JSFunction;
     deleteGamepadInvocation =
         module['_deleteGamepadInvocation'] as js.JSFunction;
     stateMachineInstanceDispatchGamepadInvocation =
@@ -1143,8 +1338,7 @@ class RiveWasm {
     getOpenUrlEventUrl = module['_getOpenUrlEventUrl'] as js.JSFunction;
     getOpenUrlEventTarget = module['_getOpenUrlEventTarget'] as js.JSFunction;
     getAudioEventAssetId = module['_getAudioEventAssetId'] as js.JSFunction;
-    getAudioEventAssetName =
-        module['_getAudioEventAssetName'] as js.JSFunction;
+    getAudioEventAssetName = module['_getAudioEventAssetName'] as js.JSFunction;
     getAudioEventVolume = module['_getAudioEventVolume'] as js.JSFunction;
     getEventCustomPropertyCount =
         module['_getEventCustomPropertyCount'] as js.JSFunction;
@@ -1199,6 +1393,12 @@ class RiveWasm {
     makeFlutterRenderImage = module['_makeFlutterRenderImage'] as js.JSFunction;
     flutterRenderImageId = module['_flutterRenderImageId'] as js.JSFunction;
     riveDataContext = module['_riveDataContext'] as js.JSFunction;
+    riveDataContextFromInstances =
+        module['_riveDataContextFromInstances'] as js.JSFunction;
+    dataContextViewModelInstanceAt =
+        module['_dataContextViewModelInstanceAt'] as js.JSFunction;
+    dataContextFromViewModelInstancePointers =
+        module['_dataContextFromViewModelInstancePointers'] as js.JSFunction;
     deleteDataContext = module['_deleteDataContext'] as js.JSFunction;
     deleteViewModelInstance =
         module['_deleteViewModelInstance'] as js.JSFunction;
@@ -1208,6 +1408,8 @@ class RiveWasm {
         module['_riveDataContextViewModelInstance'] as js.JSFunction;
     viewModelInstancePropertyValue =
         module['_viewModelInstancePropertyValue'] as js.JSFunction;
+    pruneViewModelInstanceToProperties =
+        module['_pruneViewModelInstanceToProperties'] as js.JSFunction;
     viewModelInstanceListItemViewModel =
         module['_viewModelInstanceListItemViewModel'] as js.JSFunction;
     viewModelInstanceListSize =
@@ -1228,6 +1430,9 @@ class RiveWasm {
         module['_setViewModelInstanceAssetValue'] as js.JSFunction;
     viewModelInstanceAssetImageResolveRuntimeIndex =
         module['_viewModelInstanceAssetImageResolveRuntimeIndex']
+            as js.JSFunction;
+    viewModelInstanceAssetFontResolveRuntimeIndex =
+        module['_viewModelInstanceAssetFontResolveRuntimeIndex']
             as js.JSFunction;
     setViewModelInstanceArtboardValue =
         module['_setViewModelInstanceArtboardValue'] as js.JSFunction;
@@ -1406,6 +1611,8 @@ class RiveWasm {
     rawTextRedo = module['_rawTextRedo'] as js.JSFunction;
     rawTextInputMeasure = module['_rawTextInputMeasure'] as js.JSFunction;
     rawTextSelectWord = module['_rawTextSelectWord'] as js.JSFunction;
+    rawTextHasSelection = module['_rawTextHasSelection'] as js.JSFunction;
+    rawTextClearSelection = module['_rawTextClearSelection'] as js.JSFunction;
     rawTextTextPath = module['_rawTextTextPath'] as js.JSFunction;
     rawTextSelectedTextPath =
         module['_rawTextSelectedTextPath'] as js.JSFunction;
@@ -1468,6 +1675,16 @@ extension StringUtf8Wasm on String {
 class _WebRiveNative extends RiveNative {
   @override
   RenderTexture makeRenderTexture() => _WebRenderTexture.make();
+
+  /// Destroys the pooled render textures and the shared offscreen probe,
+  /// each of which holds a live WebGL context (browsers cap those at ~16
+  /// per process) — an idle page drops to zero live contexts.
+  @override
+  void releaseRenderResources() {
+    _WebRenderTexture.releasePool();
+    RiveWasm.releaseOffscreenGL.callAsFunction(null);
+    _debugLogTexture('released pooled textures and offscreen probe');
+  }
 }
 
 bool get isRuntimeEnvironment =>
@@ -1519,6 +1736,7 @@ Future<RiveNative?> _loadWasm(String source, String name) async {
         // Add scripting workspace for the Editor
         ScriptingWorkspaceWasm.link(module);
         LuauStateWasm.link(module);
+        PathOpsWasm.link(module);
       }
       TextEngine.link(module);
       AudioEngineWasm.link(module);
@@ -1550,11 +1768,14 @@ Future<RiveNative?> makeRiveNative() async {
 class _RiveNativeWebView extends LeafRenderObjectWidget {
   final _WebRenderTexture renderTexture;
   final RenderTexturePainter? painter;
-  const _RiveNativeWebView(this.renderTexture, this.painter, {super.key});
+  final RenderResolution resolution;
+  const _RiveNativeWebView(this.renderTexture, this.painter, this.resolution,
+      {super.key});
 
   @override
   RenderObject createRenderObject(BuildContext context) {
     return _RiveNativeWebViewRenderObject(renderTexture, painter)
+      ..renderResolution = resolution
       ..devicePixelRatio = MediaQuery.devicePixelRatioOf(context)
       ..tickerModeEnabled = TickerMode.of(context);
   }
@@ -1567,6 +1788,7 @@ class _RiveNativeWebView extends LeafRenderObjectWidget {
     renderObject
       ..renderTexture = renderTexture
       ..painter = painter
+      ..renderResolution = resolution
       ..devicePixelRatio = MediaQuery.devicePixelRatioOf(context)
       ..tickerModeEnabled = TickerMode.of(context);
   }
@@ -1587,6 +1809,69 @@ class _RiveNativeWebViewRenderObject extends RiveNativeRenderBox {
     painter = renderTexturePainter;
   }
 
+  // Syncing eagerly consumes the "changed" state, so performLayout doesn't
+  // kick a redundant repaint for changes whose rebuild already woke the ticker.
+  @override
+  set renderResolution(RenderResolution value) {
+    super.renderResolution = value;
+    _syncBackingPolicy();
+  }
+
+  @override
+  set renderTexture(RenderTexture value) {
+    super.renderTexture = value;
+    _syncBackingPolicy();
+  }
+
+  /// Pushes the resolution policy to the texture, which owns the JS wire
+  /// protocol `clearRenderer` sizes the canvas from. Returns whether anything
+  /// changed. Display carries the measured ancestor paint scale per axis —
+  /// the same allocation policy as native.
+  bool _syncBackingPolicy() {
+    final texture = renderTexture;
+    if (texture is! _WebRenderTexture) {
+      return false;
+    }
+    final (fixedWidth, fixedHeight, scaleX, scaleY) =
+        switch (renderResolution) {
+      FixedRenderResolution(:final width, :final height) => (
+          width,
+          height,
+          1.0,
+          1.0
+        ),
+      LayoutRenderResolution(:final scale) => (0, 0, scale, scale),
+      DisplayRenderResolution() => (
+          0,
+          0,
+          desiredTransformWidthScale,
+          desiredTransformHeightScale
+        ),
+    };
+    return texture.setBackingPolicy(
+      fixedWidth: fixedWidth,
+      fixedHeight: fixedHeight,
+      scaleX: scaleX,
+      scaleY: scaleY,
+      maxLogical: RiveNativeRenderBox.maxTextureLogicalSize,
+    );
+  }
+
+  @override
+  void performLayout() {
+    // Read before super.performLayout(), which restarts the ticker and would
+    // mask whether the graphic was actually settled.
+    final wasTickerActive = isTickerActive;
+    super.performLayout();
+    // Display-policy remeasures land here via post-frame markNeedsLayout. A
+    // ticker that was already running repaints at the new backing on its own;
+    // settled content and painterless surfaces need the kick — a pure
+    // transform change never fires the ResizeObserver.
+    if (_syncBackingPolicy() && !wasTickerActive) {
+      renderTexture.textureChanged();
+    }
+  }
+
   @override
   double get devicePixelRatio => html.window.devicePixelRatio;
 
@@ -1595,10 +1880,10 @@ class _RiveNativeWebViewRenderObject extends RiveNativeRenderBox {
 
   @override
   void paint(PaintingContext context, Offset offset) {
-    // TODO (Gordon): Should call super.paint(context, offset);
-    // But first need to properly resize the HTML canvas element to account for the transform.
-    // super.paint(context, offset);
-    var painter = rivePainter;
+    // Measures the ancestor paint scale (display policy only) exactly like
+    // native; the scales reach the canvas backing via performLayout's sync.
+    super.paint(context, offset);
+    final painter = rivePainter;
     if (painter != null && painter.paintsCanvas) {
       painter.paintCanvas(context.canvas, offset, size);
     }

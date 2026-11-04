@@ -191,6 +191,12 @@ public:
 
     void end(float devicePixelRatio)
     {
+        // Hold g_mutex across the whole frame-finish, including the end
+        // callback that reads this frame back into the plugin's CPU buffers, so
+        // a concurrent destroyRiveRenderer() on the platform thread blocks
+        // until we return and never tears down state this callback is still
+        // using.
+        std::lock_guard<std::mutex> lock(g_mutex);
         auto renderContext = m_renderContext->actual.get();
         if (renderContext == nullptr)
         {
@@ -386,6 +392,11 @@ PLUGIN_API void destroyRiveRenderer(void* renderer)
     {
         return;
     }
+    // Serialize with in-flight end() (which also locks g_mutex): block until
+    // any running frame callback finishes so the plugin can safely free the
+    // pixel-buffer readback state after this returns, matching
+    // createRiveRenderer which also takes the lock.
+    std::unique_lock<std::mutex> lock(g_mutex);
     LinuxGLRenderer* glRenderer = static_cast<LinuxGLRenderer*>(renderer);
     delete glRenderer;
 }

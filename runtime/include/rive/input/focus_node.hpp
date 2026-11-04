@@ -29,18 +29,49 @@ class FocusNode : public RefCnt<FocusNode>
 {
 public:
     FocusNode(Focusable* focusable = nullptr) : m_focusable(focusable) {}
+    ~FocusNode();
+
+    // Transparent structural scope: unbacked (no Focusable) and never a focus
+    // target itself. Traversal descends through it to reach focusable
+    // descendants (see focusNodeTraversable); empty scopes contribute no
+    // focus stops. Used by data-bound nested-artboard hosts and component
+    // lists.
+    static rcp<FocusNode> makeStructuralScope()
+    {
+        auto node = make_rcp<FocusNode>();
+        node->canFocus(false);
+        node->canTraverse(false);
+        node->canTouch(false);
+        return node;
+    }
 
     // === Focusable ===
 
     Focusable* focusable() const { return m_focusable; }
-    void setFocusable(Focusable* focusable) { m_focusable = focusable; }
-    void clearFocusable() { m_focusable = nullptr; }
+    void setFocusable(Focusable* focusable)
+    {
+        const bool backingChanged =
+            (m_focusable == nullptr) != (focusable == nullptr);
+        m_focusable = focusable;
+        if (backingChanged)
+        {
+            invalidateFocusableContent();
+        }
+    }
+    void clearFocusable() { setFocusable(nullptr); }
 
     // === Properties (bitfield-backed) ===
 
     // Master switch: if false, node cannot receive focus at all
     bool canFocus() const { return m_flags & Flag::kCanFocus; }
-    void canFocus(bool value) { setFlag(Flag::kCanFocus, value); }
+    void canFocus(bool value)
+    {
+        if (canFocus() != value)
+        {
+            setFlag(Flag::kCanFocus, value);
+            invalidateFocusableContent();
+        }
+    }
 
     // Can receive focus via pointer/touch click
     bool canTouch() const { return m_flags & Flag::kCanTouch; }
@@ -105,6 +136,7 @@ public:
     bool isScope() const { return !m_children.empty(); }
 
     void addChild(rcp<FocusNode> child);
+    void insertChild(size_t index, rcp<FocusNode> child);
     void removeChild(rcp<FocusNode> child);
 
     // Remove this node from its current parent (used internally)
@@ -158,6 +190,11 @@ private:
 
     // Used by FocusManager to update focus state
     void setHasFocus(bool value) { setFlag(Flag::kHasFocus, value); }
+
+    // Tell this node's manager (if any) that its cached
+    // hasFocusableContent() answer may be stale. Out-of-line because
+    // FocusManager is only forward-declared here.
+    void invalidateFocusableContent();
 
     enum Flag : uint8_t
     {

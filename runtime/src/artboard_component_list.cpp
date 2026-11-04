@@ -120,6 +120,8 @@ void ArtboardComponentList::clear()
             artboard.second->cleanupFocusTree();
         }
     }
+    removeListScopeFocusNode();
+    m_listRowFocusNodes.clear();
 
     // Destroy state machines BEFORE artboards.
     // StateMachineInstance owns FocusListenerGroup objects that hold raw
@@ -364,52 +366,325 @@ std::unique_ptr<StateMachineInstance> ArtboardComponentList::
 {
     if (artboard != nullptr)
     {
-        auto stateMachineInstance = artboard->stateMachineAt(0);
+        const int defaultIndex = artboard->defaultStateMachineIndex();
+        const size_t stateMachineIndex =
+            defaultIndex >= 0 ? static_cast<size_t>(defaultIndex) : 0u;
+        auto stateMachineInstance = artboard->stateMachineAt(stateMachineIndex);
         linkStateMachineToArtboard(stateMachineInstance.get(), artboard);
         return stateMachineInstance;
     }
     return nullptr;
 }
 
+void ArtboardComponentList::ensureListScopeFocusNode(FocusManager* focusManager,
+                                                     rcp<FocusNode> hostParent)
+{
+    if (focusManager == nullptr)
+    {
+        return;
+    }
+    if (m_listScopeFocusNode == nullptr)
+    {
+        m_listScopeFocusNode = FocusNode::makeStructuralScope();
+        m_listScopeFocusNode->name("ArtboardComponentListScope");
+    }
+    // Only called from the full build pass (buildFocusTreeVisit), which is
+    // the ordering authority: always re-append so the scope sits at the
+    // walk's current position
+    focusManager->addChild(std::move(hostParent), m_listScopeFocusNode);
+    syncListRowNodesWithList(focusManager);
+}
+
+void ArtboardComponentList::removeListScopeFocusNode()
+{
+    for (size_t r = 0; r < m_listRowFocusNodes.size(); r++)
+    {
+        auto& row = m_listRowFocusNodes[r];
+        if (row == nullptr)
+        {
+            continue;
+        }
+        if (row->manager() != nullptr)
+        {
+            row->manager()->removeChild(row);
+        }
+        row.reset();
+    }
+    m_listRowFocusNodes.clear();
+    if (m_listScopeFocusNode == nullptr)
+    {
+        return;
+    }
+    if (m_listScopeFocusNode->manager() != nullptr)
+    {
+        m_listScopeFocusNode->manager()->removeChild(m_listScopeFocusNode);
+    }
+    m_listScopeFocusNode.reset();
+}
+
+rcp<FocusNode> ArtboardComponentList::makeListRowFocusNode() const
+{
+    // Structural rows: rows with focusable content are descended through;
+    // rows for items with no focusables are skipped entirely instead of
+    // becoming invisible focus stops.
+    auto node = FocusNode::makeStructuralScope();
+    node->name("ArtboardComponentListRow");
+    return node;
+}
+
+void ArtboardComponentList::reparentListRowsInScope(FocusManager* fm)
+{
+    if (fm == nullptr || m_listScopeFocusNode == nullptr)
+    {
+        return;
+    }
+    for (size_t i = 0; i < m_listRowFocusNodes.size(); i++)
+    {
+        rcp<FocusNode> row = m_listRowFocusNodes[i];
+        if (row == nullptr)
+        {
+            continue;
+        }
+        if (row->parent() != nullptr)
+        {
+            row->removeFromParent();
+        }
+    }
+    for (size_t i = 0; i < m_listRowFocusNodes.size(); i++)
+    {
+        rcp<FocusNode> row = m_listRowFocusNodes[i];
+        if (row == nullptr)
+        {
+            continue;
+        }
+        fm->addChild(m_listScopeFocusNode, row, i);
+    }
+}
+
+namespace
+{
+// True if the artboard contains any focus content at any depth: authored
+// FocusData, or a data-bound nested artboard host (whose persistent scope
+// counts as focus content even while its current artboard has no focusables —
+// a later swap can materialize focus nodes under it). Recurses through both
+// host kinds — single nested artboards and component lists
+bool artboardHasFocusContent(Artboard* artboard)
+{
+    if (artboard == nullptr)
+    {
+        return false;
+    }
+    if (artboard->rootFocusDataCount() > 0)
+    {
+        return true;
+    }
+    for (auto* host : artboard->nestedArtboards())
+    {
+        if (host == nullptr)
+        {
+            continue;
+        }
+        if (host->isArtboardDataBound())
+        {
+            return true;
+        }
+        if (artboardHasFocusContent(host->artboardInstance(0)))
+        {
+            return true;
+        }
+    }
+    for (auto* list : artboard->artboardComponentLists())
+    {
+        if (list == nullptr)
+        {
+            continue;
+        }
+        // A component list is bound to a VM list property and always owns a
+        // structural scope (ensureListScopeFocusNode); its items — and their
+        // focusables — can populate at runtime, exactly like a data-bound
+        // nested-artboard host swap. Count the list itself as latent focus
+        // content (symmetric with the isArtboardDataBound() host check above)
+        // so the enclosing item is rebuilt under its row while the inner list
+        // is still empty, keeping tab order correct once it fills.
+        return true;
+    }
+    return false;
+}
+} // namespace
+
+bool ArtboardComponentList::listItemNeedsBuildUnderRow(FocusManager* parentFM,
+                                                       ArtboardInstance* inst,
+                                                       rcp<FocusNode> row) const
+{
+    if (parentFM == nullptr || inst == nullptr || row == nullptr)
+    {
+        return false;
+    }
+    if (inst->focusManager() != parentFM)
+    {
+        return true;
+    }
+    // If the artboard has focus content but the row is empty, that content is
+    // attached outside the row (setExternalFocusManager builds at the manager
+    // root) and must be rebuilt under the row. Focus content includes
+    // data-bound host scopes at any depth, not just authored FocusData, so a
+    // later swap materializes focus nodes at the row's position.
+    if (row->children().empty() && artboardHasFocusContent(inst))
+    {
+        return true;
+    }
+    return false;
+}
+
+void ArtboardComponentList::syncListRowNodesWithList(FocusManager* fm)
+{
+    if (m_listItems.empty())
+    {
+        while (!m_listRowFocusNodes.empty())
+        {
+            auto row = m_listRowFocusNodes.back();
+            m_listRowFocusNodes.pop_back();
+            if (row != nullptr && row->manager() != nullptr)
+            {
+                row->manager()->removeChild(row);
+            }
+        }
+        return;
+    }
+    std::vector<rcp<ViewModelInstanceListItem>> listCopy = m_listItems;
+    std::vector<rcp<FocusNode>> rowCopy = m_listRowFocusNodes;
+    syncListRowNodesWithList(fm, listCopy, rowCopy);
+}
+
+void ArtboardComponentList::syncListRowNodesWithList(
+    FocusManager* fm,
+    const std::vector<rcp<ViewModelInstanceListItem>>& previousListItems,
+    const std::vector<rcp<FocusNode>>& previousRowNodes)
+{
+    if (fm == nullptr || m_listScopeFocusNode == nullptr)
+    {
+        return;
+    }
+    const int n = static_cast<int>(m_listItems.size());
+    if (n == 0)
+    {
+        m_listRowFocusNodes.clear();
+        return;
+    }
+
+    std::vector<rcp<FocusNode>> newRows(static_cast<size_t>(n), nullptr);
+    std::vector<rcp<FocusNode>> pr = previousRowNodes;
+    for (int j = 0; j < n; j++)
+    {
+        for (int k = 0; k < static_cast<int>(previousListItems.size()) &&
+                        k < static_cast<int>(pr.size());
+             k++)
+        {
+            if (m_listItems[static_cast<size_t>(j)] ==
+                previousListItems[static_cast<size_t>(k)])
+            {
+                newRows[static_cast<size_t>(j)] = pr[static_cast<size_t>(k)];
+                pr[static_cast<size_t>(k)] = nullptr;
+                break;
+            }
+        }
+    }
+    for (int k = 0; k < static_cast<int>(pr.size()) &&
+                    k < static_cast<int>(previousListItems.size());
+         k++)
+    {
+        rcp<FocusNode> unmapped = pr[static_cast<size_t>(k)];
+        if (unmapped == nullptr)
+        {
+            continue;
+        }
+        bool inNew = false;
+        for (int j = 0; j < n; j++)
+        {
+            if (m_listItems[static_cast<size_t>(j)] ==
+                previousListItems[static_cast<size_t>(k)])
+            {
+                inNew = true;
+                break;
+            }
+        }
+        if (!inNew)
+        {
+            if (unmapped->manager() != nullptr)
+            {
+                unmapped->manager()->removeChild(unmapped);
+            }
+        }
+    }
+    m_listRowFocusNodes = std::move(newRows);
+    for (int i = 0; i < n; i++)
+    {
+        rcp<FocusNode>& row = m_listRowFocusNodes[static_cast<size_t>(i)];
+        if (row == nullptr)
+        {
+            row = makeListRowFocusNode();
+        }
+    }
+    reparentListRowsInScope(fm);
+    for (int i = 0; i < n; i++)
+    {
+        ArtboardInstance* inst = artboardInstance(i);
+        if (inst == nullptr)
+        {
+            continue;
+        }
+        rcp<FocusNode> row = m_listRowFocusNodes[static_cast<size_t>(i)];
+        if (row == nullptr)
+        {
+            continue;
+        }
+        // Wire the item's state machine to the shared manager first:
+        // setExternalFocusManager rebuilds the item's focus tree at the manager
+        // root, so it must run before building under the row. Same "wire first,
+        // place last" ordering as buildFocusTreeVisit and updateArtboard.
+        auto* smi = stateMachineInstance(i);
+        if (smi != nullptr && smi->focusManager() != fm)
+        {
+            smi->setExternalFocusManager(fm);
+        }
+        if (listItemNeedsBuildUnderRow(fm, inst, row))
+        {
+            if (inst->focusManager() != nullptr)
+            {
+                inst->cleanupFocusTree();
+            }
+            inst->buildFocusTree(fm, row);
+        }
+    }
+}
+
 void ArtboardComponentList::linkStateMachineToArtboard(
     StateMachineInstance* stateMachineInstance,
     ArtboardInstance* artboardInstance)
 {
-    if (artboardInstance != nullptr && stateMachineInstance != nullptr)
+    if (artboardInstance == nullptr || stateMachineInstance == nullptr)
     {
-        auto dataContext = artboardInstance->dataContext();
-        stateMachineInstance->dataContext(dataContext);
-        // TODO: @hernan added this to make sure data binds are procesed in the
-        // current frame instead of waiting for the next run. But might not be
-        // necessary. Needs more testing.
-        stateMachineInstance->updateDataBinds(false);
+        return;
+    }
+    auto dataContext = artboardInstance->dataContext();
+    stateMachineInstance->dataContext(dataContext);
+    stateMachineInstance->updateDataBinds(false);
 
-        // Share parent artboard's focus manager and build focus tree for list
-        // item.
-        auto* parentArtboard = this->artboard();
-        if (parentArtboard != nullptr &&
-            parentArtboard->focusManager() != nullptr)
-        {
-            auto* parentFM = parentArtboard->focusManager();
-            stateMachineInstance->setExternalFocusManager(parentFM);
+    auto* parentArtboard = this->artboard();
+    if (parentArtboard != nullptr && parentArtboard->focusManager() != nullptr)
+    {
+        auto* parentFM = parentArtboard->focusManager();
+        stateMachineInstance->setExternalFocusManager(parentFM);
+    }
 
-            // Find closest focus node (handles artboard boundaries)
-            auto parentNode = FocusData::findClosestFocusNode(this);
-
-            // Build list item's focus tree under parent
-            artboardInstance->buildFocusTree(parentFM, parentNode);
-        }
-
-        // Share parent artboard's semantic manager and build semantic tree
-        // reparented under the enclosing SemanticData.
-        if (parentArtboard != nullptr &&
-            parentArtboard->semanticManager() != nullptr)
-        {
-            auto* parentSM = parentArtboard->semanticManager();
-            auto parentNode = SemanticData::findClosestSemanticNode(this);
-            stateMachineInstance->setExternalSemanticManager(parentSM,
-                                                             parentNode);
-        }
+    // Share parent artboard's semantic manager and build semantic tree
+    // reparented under the enclosing SemanticData.
+    if (parentArtboard != nullptr &&
+        parentArtboard->semanticManager() != nullptr)
+    {
+        auto* parentSM = parentArtboard->semanticManager();
+        auto parentNode = SemanticData::findClosestSemanticNode(this);
+        stateMachineInstance->setExternalSemanticManager(parentSM, parentNode);
     }
 }
 
@@ -444,6 +719,9 @@ void ArtboardComponentList::updateList(
     {
         return;
     }
+    const std::vector<rcp<ViewModelInstanceListItem>> preListItems =
+        m_listItems;
+    const std::vector<rcp<FocusNode>> preRowNodes = m_listRowFocusNodes;
     m_oldItems.clear();
     m_oldItems.assign(m_listItems.begin(), m_listItems.end());
     m_listItems.clear();
@@ -525,6 +803,14 @@ void ArtboardComponentList::updateList(
     addDirt(ComponentDirt::Components);
     recomputeListUsesDrawIndexSort();
     syncDrawIndexListeners();
+    auto* parentAb = artboard();
+    if (parentAb != nullptr && parentAb->focusManager() != nullptr &&
+        m_listScopeFocusNode != nullptr)
+    {
+        syncListRowNodesWithList(parentAb->focusManager(),
+                                 preListItems,
+                                 preRowNodes);
+    }
 }
 
 void ArtboardComponentList::syncLayoutChildren()
@@ -616,7 +902,7 @@ void ArtboardComponentList::reset()
                 auto dataContext = itr->second->dataContext();
                 if (dataContext != nullptr)
                 {
-                    auto boundInstance = dataContext->viewModelInstance();
+                    auto boundInstance = dataContext->mainViewModelInstance();
                     if (boundInstance != nullptr &&
                         boundInstance != viewModelInstance)
                     {
@@ -1046,9 +1332,9 @@ void ArtboardComponentList::updateArtboardsWorldTransform()
 
 void ArtboardComponentList::updateConstraints()
 {
-    if (m_layoutConstraints.size() > 0)
+    if (layoutConstraints().size() > 0)
     {
-        for (auto parentConstraint : m_layoutConstraints)
+        for (auto parentConstraint : layoutConstraints())
         {
             parentConstraint->constrainChild(this);
         }
@@ -1404,6 +1690,19 @@ void ArtboardComponentList::addVirtualizable(int index)
     }
 }
 
+void ArtboardComponentList::virtualizableChanged()
+{
+    auto* parentArtboard = this->artboard();
+    if (parentArtboard != nullptr && parentArtboard->focusManager() != nullptr)
+    {
+        auto* parentFM = parentArtboard->focusManager();
+        if (m_listScopeFocusNode != nullptr)
+        {
+            syncListRowNodesWithList(parentFM);
+        }
+    }
+}
+
 void ArtboardComponentList::removeVirtualizable(int index)
 {
     auto listItem = this->listItem(index);
@@ -1446,7 +1745,7 @@ bool ArtboardComponentList::virtualizationEnabled()
 
 ScrollConstraint* ArtboardComponentList::scrollConstraint()
 {
-    for (auto parentConstraint : m_layoutConstraints)
+    for (auto parentConstraint : layoutConstraints())
     {
         if (parentConstraint->constraint()->is<ScrollConstraint>())
         {

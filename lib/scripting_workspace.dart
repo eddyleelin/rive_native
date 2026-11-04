@@ -201,6 +201,8 @@ enum ScriptProblemType {
 
   wgslParseError,
   wgslValidationError,
+
+  requireQualification,
 }
 
 class ScriptProblemResult {
@@ -624,11 +626,35 @@ class CompiledModule {
   CompiledModule({required this.bytecode, required this.name});
 }
 
+/// A per-source shader-bake failure reported by [ScriptingWorkspace.compileAndSign]
+/// (e.g. a shader that requested an HLSL variant but failed to compile it). When
+/// present, the corresponding shader was NOT embedded for that backend.
+class ShaderCompileError {
+  /// The shader source (script) name the failure is for.
+  final String scriptName;
+
+  /// Human-readable reason the shader variant was not produced.
+  final String message;
+
+  ShaderCompileError({required this.scriptName, required this.message});
+
+  @override
+  String toString() => '$scriptName: $message';
+}
+
 class CompileAndSignResult {
   final List<CompiledModule> modules;
   final Uint8List signature;
 
-  CompileAndSignResult({required this.modules, required this.signature});
+  /// Non-fatal shader-bake failures. Empty on success. A non-empty list means
+  /// one or more shaders were exported missing a requested backend variant.
+  final List<ShaderCompileError> shaderErrors;
+
+  CompileAndSignResult({
+    required this.modules,
+    required this.signature,
+    this.shaderErrors = const [],
+  });
 
   static CompileAndSignResult? read(BinaryReader reader) {
     final moduleCount = reader.readVarUint();
@@ -643,7 +669,25 @@ class CompileAndSignResult {
 
     final signatureLength = reader.readVarUint();
     Uint8List signature = reader.read(signatureLength);
-    return CompileAndSignResult(modules: modules, signature: signature);
+
+    // Trailing shader-error section (written after the signature). Absent in
+    // older responses, in which case the reader is already at EOF.
+    final shaderErrors = <ShaderCompileError>[];
+    if (!reader.isEOF) {
+      final errorCount = reader.readVarUint();
+      for (int i = 0; i < errorCount; i++) {
+        final scriptName = reader.readString();
+        final message = reader.readString();
+        shaderErrors
+            .add(ShaderCompileError(scriptName: scriptName, message: message));
+      }
+    }
+
+    return CompileAndSignResult(
+      modules: modules,
+      signature: signature,
+      shaderErrors: shaderErrors,
+    );
   }
 }
 
@@ -890,16 +934,53 @@ abstract class ScriptingWorkspace {
     String source,
   );
 
-  /// Set the [source] code for the script with [scriptId]. Calling this again
-  /// with the same [scriptId] will overwrite the script. Set [highlight] to
-  /// true if you'd like to have highlighting data computed. [scriptName] is the
-  /// name used to require this script.
+  /// Set the [source] code for the script with [scriptId]. [libraryId] and
+  /// [libraryVersionId] scope it to a library version, zero scope is the
+  /// host file.
   Future<HighlightResult> setScriptSource(
     String scriptId,
     String scriptName,
     String source, {
     bool highlight = false,
+    int libraryId = 0,
+    int libraryVersionId = 0,
   });
+
+  /// Scope for [scriptId] without a source push. Proxies stamp before their
+  /// text hydrates, an empty source push would register a dead scoped module.
+  void setScriptScope(String scriptId, int libraryId, int libraryVersionId);
+
+  /// One import edge: the caller scope pins [name] to a target library
+  /// version. Root caller is (0,0). Labels live on edges, so `lib:` requires
+  /// resolve per caller.
+  void setLibraryImport(
+    int callerLibraryId,
+    int callerLibraryVersionId,
+    String name,
+    int targetLibraryId,
+    int targetLibraryVersionId,
+  );
+
+  /// Remove the import edge for [name] from the caller scope.
+  void removeLibraryImport(
+    int callerLibraryId,
+    int callerLibraryVersionId,
+    String name,
+  );
+
+  /// Canonical mangle prefix for a library version, e.g. draco@3. Compiled
+  /// requires and exported wire names both derive from it, so the editor
+  /// pushes one map for both.
+  void setLibraryCanonicalName(
+    int libraryId,
+    int libraryVersionId,
+    String canonicalName,
+  );
+
+  /// The statically linked source for [scriptId]: every constant require
+  /// resolved to its registered name. Export flows compile elsewhere without
+  /// this workspace's import state, so they send this instead of raw source.
+  Future<String> rewriteRequires(String scriptId);
 
   /// Set a WGSL shader source. Same as [setScriptSource] but marks the script
   /// as WGSL so the workspace uses naga for validation/highlighting/formatting

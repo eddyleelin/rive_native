@@ -40,7 +40,6 @@ constexpr uint32_t PLS_TRANSIENT_COVERAGE_IDX = 0u;
 constexpr uint32_t PLS_TRANSIENT_CLIP_IDX = 1u;
 
 constexpr VkDeviceSize ZERO_OFFSET[1] = {0};
-constexpr uint32_t ZERO_OFFSET_32[1] = {0};
 
 static VkBufferUsageFlagBits render_buffer_usage_flags(
     RenderBufferType renderBufferType)
@@ -804,16 +803,17 @@ private:
 };
 
 // Renders feathers to the atlas.
-class RenderContextVulkanImpl::AtlasPipeline : public ResourceTexturePipeline
+class RenderContextVulkanImpl::FeatherAtlasPipeline
+    : public ResourceTexturePipeline
 {
 public:
-    AtlasPipeline(PipelineManagerVulkan* pipelineManager,
-                  const DriverWorkarounds& workarounds) :
+    FeatherAtlasPipeline(PipelineManagerVulkan* pipelineManager,
+                         const DriverWorkarounds& workarounds) :
         ResourceTexturePipeline(ref_rcp(pipelineManager->vulkanContext()),
-                                pipelineManager->atlasFormat(),
+                                pipelineManager->featherAtlasFormat(),
                                 VK_ATTACHMENT_LOAD_OP_CLEAR,
                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                                "Atlas",
+                                "Feather Atlas",
                                 workarounds)
     {
         VkDescriptorSetLayout pipelineDescriptorSetLayouts[] = {
@@ -923,7 +923,7 @@ public:
                                                &m_fillPipeline));
         m_vk->setDebugNameIfEnabled(uint64_t(m_fillPipeline),
                                     VK_OBJECT_TYPE_PIPELINE,
-                                    "Atlas Fill Pipeline");
+                                    "Feather Atlas Fill Pipeline");
 
         stages[1].module = fragmentStrokeShader;
         blendState.colorBlendOp = VK_BLEND_OP_MAX;
@@ -935,14 +935,14 @@ public:
                                                &m_strokePipeline));
         m_vk->setDebugNameIfEnabled(uint64_t(m_strokePipeline),
                                     VK_OBJECT_TYPE_PIPELINE,
-                                    "Atlas Stroke Pipeline");
+                                    "Feather Atlas Stroke Pipeline");
 
         m_vk->DestroyShaderModule(m_vk->device, vertexShader, nullptr);
         m_vk->DestroyShaderModule(m_vk->device, fragmentFillShader, nullptr);
         m_vk->DestroyShaderModule(m_vk->device, fragmentStrokeShader, nullptr);
     }
 
-    ~AtlasPipeline() override
+    ~FeatherAtlasPipeline() override
     {
         m_vk->DestroyPipelineLayout(m_vk->device, m_pipelineLayout, nullptr);
         m_vk->DestroyPipeline(m_vk->device, m_fillPipeline, nullptr);
@@ -987,7 +987,6 @@ RenderContextVulkanImpl::RenderContextVulkanImpl(
             vkutil::vendors::Qualcomm,
     }),
     m_flushUniformBufferPool(m_vk, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT),
-    m_imageDrawUniformBufferPool(m_vk, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT),
     m_pathBufferPool(m_vk, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
     m_paintBufferPool(m_vk, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
     m_paintAuxBufferPool(m_vk, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
@@ -995,6 +994,7 @@ RenderContextVulkanImpl::RenderContextVulkanImpl(
     m_gradSpanBufferPool(m_vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT),
     m_tessSpanBufferPool(m_vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT),
     m_triangleBufferPool(m_vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT),
+    m_imageDrawInstanceBufferPool(m_vk, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT),
     m_descriptorSetPoolPool(make_rcp<DescriptorSetPoolPool>(m_vk))
 {
     const auto& physicalDeviceProps = m_vk->physicalDeviceProperties();
@@ -1034,6 +1034,16 @@ RenderContextVulkanImpl::RenderContextVulkanImpl(
         // is 8, but we might as well make this >= 4 check to be more clear
         // about how we're using it.
         physicalDeviceProps.limits.maxClipDistances >= 4;
+    m_platformFeatures.supportsPipelineDynamicState =
+        m_vk->features.apiVersion >= VK_API_VERSION_1_3 &&
+        m_vk->features.colorWriteEnable &&
+        // Chunking would split a combined pass's draws across render passes and
+        // corrupt the stencil.
+        !m_workarounds.needsInterruptibleRenderPasses() &&
+        // PowerVR draws the combined passes incorrectly; looks like a driver
+        // bug with no obvious workaround. Seen on Pixel 10 (D-Series
+        // DXT-48-1536).
+        physicalDeviceProps.vendorID != vkutil::vendors::Imagination;
     m_platformFeatures.clipSpaceBottomUp = false;
     m_platformFeatures.framebufferBottomUp = false;
     // Vulkan can't load color from a different texture into the transient MSAA
@@ -1142,8 +1152,9 @@ void RenderContextVulkanImpl::initGPUObjects(
     m_tessellatePipeline =
         std::make_unique<TessellatePipeline>(m_pipelineManager.get(),
                                              m_workarounds);
-    m_atlasPipeline =
-        std::make_unique<AtlasPipeline>(m_pipelineManager.get(), m_workarounds);
+    m_featherAtlasPipeline =
+        std::make_unique<FeatherAtlasPipeline>(m_pipelineManager.get(),
+                                               m_workarounds);
 
     // Determine usage flags for transient PLS backing textures.
     m_plsTransientUsageFlags = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
@@ -1162,30 +1173,32 @@ void RenderContextVulkanImpl::initGPUObjects(
         m_plsTransientUsageFlags |= VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
     }
 
-    // Emulate the feather texture1d array as a 2d texture until we add
-    // texture1d support in Vulkan.
-    uint16_t featherTextureData[gpu::GAUSSIAN_TABLE_SIZE *
-                                FEATHER_TEXTURE_1D_ARRAY_LENGTH];
-    memcpy(featherTextureData,
+    // Emulate the gaussian integral texture1d array as a 2d texture until we
+    // add texture1d support in Vulkan.
+    uint16_t
+        gaussianIntegralTextureData[gpu::GAUSSIAN_TABLE_SIZE *
+                                    GAUSSIAN_INTEGRAL_TEXTURE_1D_ARRAY_LENGTH];
+    memcpy(gaussianIntegralTextureData,
            gpu::g_gaussianIntegralTableF16,
            sizeof(gpu::g_gaussianIntegralTableF16));
-    memcpy(featherTextureData + gpu::GAUSSIAN_TABLE_SIZE,
+    memcpy(gaussianIntegralTextureData + gpu::GAUSSIAN_TABLE_SIZE,
            gpu::g_inverseGaussianIntegralTableF16,
            sizeof(gpu::g_inverseGaussianIntegralTableF16));
     static_assert(FEATHER_FUNCTION_ARRAY_INDEX == 0);
     static_assert(FEATHER_INVERSE_FUNCTION_ARRAY_INDEX == 1);
-    m_featherTexture = m_vk->makeTexture2D(
+    m_gaussianIntegralTexture = m_vk->makeTexture2D(
         {
             .format = VK_FORMAT_R16_SFLOAT,
             .extent =
                 {
                     .width = gpu::GAUSSIAN_TABLE_SIZE,
-                    .height = FEATHER_TEXTURE_1D_ARRAY_LENGTH,
+                    .height = GAUSSIAN_INTEGRAL_TEXTURE_1D_ARRAY_LENGTH,
                 },
         },
-        "feather texture");
-    m_featherTexture->scheduleUpload(featherTextureData,
-                                     sizeof(featherTextureData));
+        "gaussian integral texture");
+    m_gaussianIntegralTexture->scheduleUpload(
+        gaussianIntegralTextureData,
+        sizeof(gaussianIntegralTextureData));
 
     m_tessSpanIndexBuffer = m_vk->makeBuffer(
         {
@@ -1242,7 +1255,6 @@ RenderContextVulkanImpl::~RenderContextVulkanImpl()
 {
     // These should all have gotten recycled at the end of the last frame.
     assert(m_flushUniformBuffer == nullptr);
-    assert(m_imageDrawUniformBuffer == nullptr);
     assert(m_pathBuffer == nullptr);
     assert(m_paintBuffer == nullptr);
     assert(m_paintAuxBuffer == nullptr);
@@ -1250,6 +1262,7 @@ RenderContextVulkanImpl::~RenderContextVulkanImpl()
     assert(m_gradSpanBuffer == nullptr);
     assert(m_tessSpanBuffer == nullptr);
     assert(m_triangleBuffer == nullptr);
+    assert(m_imageDrawInstanceBuffer == nullptr);
 
     if (m_canvasCommandPool != VK_NULL_HANDLE)
     {
@@ -1321,25 +1334,25 @@ void RenderContextVulkanImpl::resizeTessellationTexture(uint32_t width,
     });
 }
 
-void RenderContextVulkanImpl::resizeAtlasTexture(uint32_t width,
-                                                 uint32_t height)
+void RenderContextVulkanImpl::resizeFeatherAtlasTexture(uint32_t width,
+                                                        uint32_t height)
 {
     width = std::max(width, 1u);
     height = std::max(height, 1u);
 
-    m_atlasTexture = m_vk->makeTexture2D(
+    m_featherAtlasTexture = m_vk->makeTexture2D(
         {
-            .format = m_pipelineManager->atlasFormat(),
+            .format = m_pipelineManager->featherAtlasFormat(),
             .extent = {width, height},
             .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                      VK_IMAGE_USAGE_SAMPLED_BIT,
         },
-        "atlas texture");
+        "feather atlas texture");
 
-    m_atlasFramebuffer = m_vk->makeFramebuffer({
-        .renderPass = m_atlasPipeline->renderPass(),
+    m_featherAtlasFramebuffer = m_vk->makeFramebuffer({
+        .renderPass = m_featherAtlasPipeline->renderPass(),
         .attachmentCount = 1,
-        .pAttachments = m_atlasTexture->vkImageViewAddressOf(),
+        .pAttachments = m_featherAtlasTexture->vkImageViewAddressOf(),
         .width = width,
         .height = height,
         .layers = 1,
@@ -1666,6 +1679,38 @@ void RenderContextVulkanImpl::setCanvasQueue(VkQueue queue,
 {
     m_canvasQueue = queue;
     m_canvasQueueFamilyIndex = queueFamilyIndex;
+
+    // The feather and null image textures are initialized once and only read.
+    // Every flush() lazily initializes them at its top, but that only does real
+    // work the first time and updates the CPU-side layout tracker. Later
+    // flushes note that these textures are already initialized and no-op.
+    // That's fine as long as the first flush() is also the first submit!
+    //
+    // The canvas pre-pass breaks that. The host flushes its main frame first --
+    // recording the upload + transition into the main-frame command buffer and
+    // advancing the layout tracker -- then opens a pre-pass that flushes into
+    // its own command buffer, which commitCommandBuffer submits *before* the
+    // main-frame one (but *after* the main-frame one has been recorded). So
+    // these textures will still be uninitialized when the pre-pass command
+    // buffer executes.
+    //
+    // We have a queue here, before any frame has flushed, so initialize these
+    // textures eagerly in a one-shot command buffer in order to avoid
+    // submission-order hazards.
+    if (m_canvasQueue != VK_NULL_HANDLE &&
+        (m_gaussianIntegralTexture->lastAccess().layout ==
+             VK_IMAGE_LAYOUT_UNDEFINED ||
+         m_nullImageTexture->lastAccess().layout == VK_IMAGE_LAYOUT_UNDEFINED))
+    {
+        if (void* cb = makeCommandBuffer())
+        {
+            auto commandBuffer = reinterpret_cast<VkCommandBuffer>(cb);
+            m_gaussianIntegralTexture->prepareForVertexOrFragmentShaderRead(
+                commandBuffer);
+            m_nullImageTexture->prepareForFragmentShaderRead(commandBuffer);
+            commitCommandBuffer(cb);
+        }
+    }
 }
 
 void* RenderContextVulkanImpl::makeCommandBuffer()
@@ -1731,7 +1776,6 @@ void RenderContextVulkanImpl::prepareToFlush(uint64_t nextFrameNumber,
 {
     // These should all have gotten recycled at the end of the last frame.
     assert(m_flushUniformBuffer == nullptr);
-    assert(m_imageDrawUniformBuffer == nullptr);
     assert(m_pathBuffer == nullptr);
     assert(m_paintBuffer == nullptr);
     assert(m_paintAuxBuffer == nullptr);
@@ -1739,6 +1783,7 @@ void RenderContextVulkanImpl::prepareToFlush(uint64_t nextFrameNumber,
     assert(m_gradSpanBuffer == nullptr);
     assert(m_tessSpanBuffer == nullptr);
     assert(m_triangleBuffer == nullptr);
+    assert(m_imageDrawInstanceBuffer == nullptr);
 
     // Advance the context frame and delete resources that are no longer
     // referenced by in-flight command buffers.
@@ -1753,7 +1798,6 @@ void RenderContextVulkanImpl::prepareToFlush(uint64_t nextFrameNumber,
 
     // Acquire buffers for the flush.
     m_flushUniformBuffer = m_flushUniformBufferPool.acquire();
-    m_imageDrawUniformBuffer = m_imageDrawUniformBufferPool.acquire();
     m_pathBuffer = m_pathBufferPool.acquire();
     m_paintBuffer = m_paintBufferPool.acquire();
     m_paintAuxBuffer = m_paintAuxBufferPool.acquire();
@@ -1761,6 +1805,7 @@ void RenderContextVulkanImpl::prepareToFlush(uint64_t nextFrameNumber,
     m_gradSpanBuffer = m_gradSpanBufferPool.acquire();
     m_tessSpanBuffer = m_tessSpanBufferPool.acquire();
     m_triangleBuffer = m_triangleBufferPool.acquire();
+    m_imageDrawInstanceBuffer = m_imageDrawInstanceBufferPool.acquire();
 }
 
 namespace descriptor_pool_limits
@@ -1769,7 +1814,7 @@ constexpr static uint32_t kMaxUniformUpdates = 3;
 constexpr static uint32_t kMaxDynamicUniformUpdates = 1;
 constexpr static uint32_t kMaxImageTextureUpdates = 256;
 constexpr static uint32_t kMaxCombinedImageSamplerUpdates =
-    3 + kMaxImageTextureUpdates; // grad + feather + atlas + images
+    3 + kMaxImageTextureUpdates; // grad + feather + feather atlas + images
 constexpr static uint32_t kMaxSampledImageUpdates = 1; // tess
 constexpr static uint32_t kMaxStorageImageUpdates =
     4; // color/coverage/clip/scratch in clockwise mode.
@@ -2208,7 +2253,8 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
         reinterpret_cast<VkCommandBuffer>(desc.externalCommandBuffer);
     assert(commandBuffer != VK_NULL_HANDLE);
 
-    m_featherTexture->prepareForVertexOrFragmentShaderRead(commandBuffer);
+    m_gaussianIntegralTexture->prepareForVertexOrFragmentShaderRead(
+        commandBuffer);
     m_nullImageTexture->prepareForFragmentShaderRead(commandBuffer);
 
     uint32_t pendingTessPatchCount = 0;
@@ -2230,6 +2276,7 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
             case DrawType::msaaOuterCubics:
             case DrawType::msaaStrokes:
             case DrawType::msaaMidpointFanBorrowedCoverage:
+            case DrawType::msaaDynamicMidpointFans:
             case DrawType::msaaMidpointFans:
             case DrawType::msaaMidpointFanStencilReset:
             case DrawType::msaaMidpointFanPathsStencil:
@@ -2238,7 +2285,7 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
                 break;
             case DrawType::clipReset:
             case DrawType::interiorTriangulation:
-            case DrawType::atlasBlit:
+            case DrawType::featherAtlasBlit:
             case DrawType::imageRect:
             case DrawType::imageMesh:
             case DrawType::renderPassInitialize:
@@ -2273,18 +2320,6 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
             .buffer = *m_flushUniformBuffer,
             .offset = desc.flushUniformDataOffsetInBytes,
             .range = sizeof(gpu::FlushUniforms),
-        }});
-
-    m_vk->updateBufferDescriptorSets(
-        descriptorSetAllocator.perFlushDescriptorSet(),
-        {
-            .dstBinding = IMAGE_DRAW_UNIFORM_BUFFER_IDX,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-        },
-        {{
-            .buffer = *m_imageDrawUniformBuffer,
-            .offset = 0,
-            .range = sizeof(gpu::ImageDrawUniforms),
         }});
 
     m_vk->updateBufferDescriptorSets(
@@ -2375,29 +2410,40 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         },
         {{
-            .imageView = m_gradTexture->vkImageView(),
+            // When there are no gradients in this flush, the grad texture is
+            // never rendered and may still be in VK_IMAGE_LAYOUT_UNDEFINED.
+            // Bind the null texture as a layout satisfier.
+            .imageView = desc.gradSpanCount != 0
+                             ? m_gradTexture->vkImageView()
+                             : m_nullImageTexture->vkImageView(),
             .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         }});
 
     m_vk->updateImageDescriptorSets(
         descriptorSetAllocator.perFlushDescriptorSet(),
         {
-            .dstBinding = FEATHER_TEXTURE_IDX,
+            .dstBinding = GAUSSIAN_INTEGRAL_TEXTURE_IDX,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         },
         {{
-            .imageView = m_featherTexture->vkImageView(),
+            .imageView = m_gaussianIntegralTexture->vkImageView(),
             .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         }});
 
     m_vk->updateImageDescriptorSets(
         descriptorSetAllocator.perFlushDescriptorSet(),
         {
-            .dstBinding = ATLAS_TEXTURE_IDX,
+            .dstBinding = FEATHER_ATLAS_TEXTURE_IDX,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         },
         {{
-            .imageView = m_atlasTexture->vkImageView(),
+            // When there are no offscreen feathers in this flush, the atlas is
+            // never rendered and may still be in VK_IMAGE_LAYOUT_UNDEFINED.
+            // Bind the null texture as a layout satisfier.
+            .imageView = (desc.featherAtlasFillBatchCount |
+                          desc.featherAtlasStrokeBatchCount) != 0
+                             ? m_featherAtlasTexture->vkImageView()
+                             : m_nullImageTexture->vkImageView(),
             .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         }});
 
@@ -2435,8 +2481,8 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
             PER_FLUSH_BINDINGS_SET,
             1,
             &descriptorSetAllocator.perFlushDescriptorSet(),
-            1,
-            ZERO_OFFSET_32);
+            0,
+            nullptr);
 
         m_vk->CmdBindPipeline(commandBuffer,
                               VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2467,22 +2513,6 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
         // VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL.
         m_gradTexture->lastAccess().layout =
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    }
-    else
-    {
-        // The above render pass has the barriers in it, but if it was not run,
-        // we still are going to bind it as READ_ONLY_OPTIMAL so need to
-        // transition it
-        // TODO: Perhaps we should have a "null" texture that we can bind for
-        // cases like this where we need to bind all the textures but know it's
-        // not needed
-        m_gradTexture->barrier(
-            commandBuffer,
-            {
-                .pipelineStages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                .accessMask = VK_ACCESS_SHADER_READ_BIT,
-                .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            });
     }
 
     // Tessellate all curves into vertices in the tessellation texture.
@@ -2539,8 +2569,8 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
             PER_FLUSH_BINDINGS_SET,
             1,
             &descriptorSetAllocator.perFlushDescriptorSet(),
-            1,
-            ZERO_OFFSET_32);
+            0,
+            nullptr);
 
         m_vk->CmdBindPipeline(commandBuffer,
                               VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2635,19 +2665,21 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
             .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         });
 
-    // Render the atlas if we have any offscreen feathers.
-    if ((desc.atlasFillBatchCount | desc.atlasStrokeBatchCount) != 0)
+    // Render the feather atlas if we have any offscreen feathers.
+    if ((desc.featherAtlasFillBatchCount | desc.featherAtlasStrokeBatchCount) !=
+        0)
     {
         VkRect2D renderArea = {
-            .extent = {desc.atlasContentWidth, desc.atlasContentHeight},
+            .extent = {desc.featherAtlasContentWidth,
+                       desc.featherAtlasContentHeight},
         };
 
         // Begin the render pass before binding buffers or updating descriptor
         // sets. It's valid Vulkan to do these tasks in any order, but Adreno
         // 730, 740, and 840 appreciate it when we begin the render pass first.
-        m_atlasPipeline->beginRenderPass(commandBuffer,
-                                         renderArea,
-                                         *m_atlasFramebuffer);
+        m_featherAtlasPipeline->beginRenderPass(commandBuffer,
+                                                renderArea,
+                                                *m_featherAtlasFramebuffer);
 
         m_vk->CmdSetViewport(commandBuffer,
                              0,
@@ -2666,21 +2698,22 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
         m_vk->CmdBindDescriptorSets(
             commandBuffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS,
-            m_atlasPipeline->pipelineLayout(),
+            m_featherAtlasPipeline->pipelineLayout(),
             PER_FLUSH_BINDINGS_SET,
             1,
             &descriptorSetAllocator.perFlushDescriptorSet(),
-            1,
-            ZERO_OFFSET_32);
+            0,
+            nullptr);
 
-        if (desc.atlasFillBatchCount != 0)
+        if (desc.featherAtlasFillBatchCount != 0)
         {
             m_vk->CmdBindPipeline(commandBuffer,
                                   VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                  m_atlasPipeline->fillPipeline());
-            for (size_t i = 0; i < desc.atlasFillBatchCount; ++i)
+                                  m_featherAtlasPipeline->fillPipeline());
+            for (size_t i = 0; i < desc.featherAtlasFillBatchCount; ++i)
             {
-                const gpu::AtlasDrawBatch& fillBatch = desc.atlasFillBatches[i];
+                const gpu::AtlasDrawBatch& fillBatch =
+                    desc.featherAtlasFillBatches[i];
                 VkRect2D scissor = {
                     .offset = {fillBatch.scissor.left, fillBatch.scissor.top},
                     .extent = {fillBatch.scissor.width(),
@@ -2693,10 +2726,10 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
                                      m_workarounds.maxInstancesPerRenderPass))
 
                 {
-                    m_atlasPipeline->interruptRenderPassIfNeeded(
+                    m_featherAtlasPipeline->interruptRenderPassIfNeeded(
                         commandBuffer,
                         renderArea,
-                        *m_atlasFramebuffer,
+                        *m_featherAtlasFramebuffer,
                         chunkPatchCount,
                         m_workarounds);
                     m_vk->CmdDrawIndexed(
@@ -2710,15 +2743,15 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
             }
         }
 
-        if (desc.atlasStrokeBatchCount != 0)
+        if (desc.featherAtlasStrokeBatchCount != 0)
         {
             m_vk->CmdBindPipeline(commandBuffer,
                                   VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                  m_atlasPipeline->strokePipeline());
-            for (size_t i = 0; i < desc.atlasStrokeBatchCount; ++i)
+                                  m_featherAtlasPipeline->strokePipeline());
+            for (size_t i = 0; i < desc.featherAtlasStrokeBatchCount; ++i)
             {
                 const gpu::AtlasDrawBatch& strokeBatch =
-                    desc.atlasStrokeBatches[i];
+                    desc.featherAtlasStrokeBatches[i];
                 VkRect2D scissor = {
                     .offset = {strokeBatch.scissor.left,
                                strokeBatch.scissor.top},
@@ -2732,10 +2765,10 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
                                      m_workarounds.maxInstancesPerRenderPass))
 
                 {
-                    m_atlasPipeline->interruptRenderPassIfNeeded(
+                    m_featherAtlasPipeline->interruptRenderPassIfNeeded(
                         commandBuffer,
                         renderArea,
-                        *m_atlasFramebuffer,
+                        *m_featherAtlasFramebuffer,
                         chunkPatchCount,
                         m_workarounds);
                     m_vk->CmdDrawIndexed(commandBuffer,
@@ -2752,7 +2785,7 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
 
         // The render pass transitioned the atlas texture to
         // VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL.
-        m_atlasTexture->lastAccess().layout =
+        m_featherAtlasTexture->lastAccess().layout =
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
@@ -3314,8 +3347,8 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
                                     ? VULKAN_BINDINGS_SET_COUNT
                                     : VULKAN_BINDINGS_SET_COUNT - 1,
                                 drawDescriptorSets,
-                                1,
-                                ZERO_OFFSET_32);
+                                0,
+                                nullptr);
 
     for (int32_t y = drawBounds.top; y < drawBounds.bottom;
          y += virtualTileHeight)
@@ -3404,6 +3437,86 @@ void RenderContextVulkanImpl::flush(const FlushDescriptor& desc)
     }
 }
 
+// Binds pipelines and pushes dynamic state for one draw-list submission. Caches
+// the currently-bound pipeline and scissor and skips redundant sets -- both are
+// safe to cache: the same VkPipeline handle is identical baked state, and the
+// scissor is dynamic in every layout so no bind ever clobbers it. Dynamic
+// depth/stencil/cull/color state is pushed UNCONDITIONALLY: binding a static
+// pipeline leaves those states undefined, so a cache would need
+// invalidate-on-bind bookkeeping that isn't worth its complexity for a handful
+// of cheap vkCmdSet* calls. Must be a fresh instance per command buffer.
+class PipelineBinder
+{
+public:
+    explicit PipelineBinder(VulkanContext* vk) : m_vk(vk) {}
+
+    void bind(VkCommandBuffer commandBuffer,
+              VkPipeline pipeline,
+              const IAABB& scissorRect)
+    {
+        if (pipeline != m_pipeline)
+        {
+            m_vk->CmdBindPipeline(commandBuffer,
+                                  VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  pipeline);
+            m_pipeline = pipeline;
+        }
+        if (!m_haveScissor || scissorRect != m_scissorRect)
+        {
+            VkRect2D vkScissorRect = vkutil::rect2d(scissorRect);
+            m_vk->CmdSetScissor(commandBuffer, 0, 1, &vkScissorRect);
+            m_scissorRect = scissorRect;
+            m_haveScissor = true;
+        }
+    }
+
+    // Applies one constituent pass's depth/stencil/cull/color to the
+    // currently-bound dynamic-state pipeline.
+    void setDynamicState(VkCommandBuffer commandBuffer,
+                         const gpu::PipelineState& ps)
+    {
+        // Depth.
+        m_vk->CmdSetDepthWriteEnable(commandBuffer, ps.depthWriteEnabled);
+
+        // Stencil.
+        m_vk->CmdSetStencilCompareMask(commandBuffer,
+                                       VK_STENCIL_FACE_FRONT_AND_BACK,
+                                       ps.stencilCompareMask);
+        m_vk->CmdSetStencilWriteMask(commandBuffer,
+                                     VK_STENCIL_FACE_FRONT_AND_BACK,
+                                     ps.stencilWriteMask);
+        const auto setStencilOps = [&](VkStencilFaceFlags faces,
+                                       const gpu::StencilFaceOps& ops) {
+            m_vk->CmdSetStencilOp(commandBuffer,
+                                  faces,
+                                  vkutil::vkStencilOp(ops.stencilFailOp),
+                                  vkutil::vkStencilOp(ops.depthStencilPassOp),
+                                  vkutil::vkStencilOp(ops.depthFailOp),
+                                  vkutil::vkCompareOp(ops.compareOp));
+        };
+        setStencilOps(ps.stencilDoubleSided ? VK_STENCIL_FACE_FRONT_BIT
+                                            : VK_STENCIL_FACE_FRONT_AND_BACK,
+                      ps.stencilFrontOps);
+        if (ps.stencilDoubleSided)
+        {
+            setStencilOps(VK_STENCIL_FACE_BACK_BIT, ps.stencilBackOps);
+        }
+
+        // Cull.
+        m_vk->CmdSetCullMode(commandBuffer, vkutil::vkCullMode(ps.cullFace));
+
+        // Color.
+        VkBool32 colorWrite = ps.colorWriteEnabled ? VK_TRUE : VK_FALSE;
+        m_vk->CmdSetColorWriteEnableEXT(commandBuffer, 1, &colorWrite);
+    }
+
+private:
+    VulkanContext* const m_vk;
+    VkPipeline m_pipeline = VK_NULL_HANDLE;
+    IAABB m_scissorRect;
+    bool m_haveScissor = false;
+};
+
 void RenderContextVulkanImpl::submitDrawList(
     const FlushDescriptor& desc,
     DescriptorSetAllocator* descriptorSetAllocator,
@@ -3417,7 +3530,7 @@ void RenderContextVulkanImpl::submitDrawList(
 
     const auto renderPassScissorRect = drawRenderPass->scissor();
 
-    auto currentScissorRect = IAABB{};
+    PipelineBinder pipelineBinder(m_vk.get());
 
     // Submit the DrawList.
     for (const DrawBatch& batch : *desc.drawList)
@@ -3461,22 +3574,14 @@ void RenderContextVulkanImpl::submitDrawList(
                     batch.imageSampler);
             }
 
-            VkDescriptorSet imageDescriptorSets[] = {
-                // Dynamic offset to imageDraw uniforms.
-                descriptorSetAllocator->perFlushDescriptorSet(),
-                // imageTexture.
-                imageDescriptorSet,
-            };
-            static_assert(PER_DRAW_BINDINGS_SET == PER_FLUSH_BINDINGS_SET + 1);
-
             m_vk->CmdBindDescriptorSets(commandBuffer,
                                         VK_PIPELINE_BIND_POINT_GRAPHICS,
                                         *drawRenderPass->pipelineLayout(),
-                                        PER_FLUSH_BINDINGS_SET,
-                                        std::size(imageDescriptorSets),
-                                        imageDescriptorSets,
+                                        PER_DRAW_BINDINGS_SET,
                                         1,
-                                        &batch.imageDrawDataOffset);
+                                        &imageDescriptorSet,
+                                        0,
+                                        nullptr);
         }
 
         // Setup the pipeline for this specific drawType and shaderFeatures.
@@ -3566,10 +3671,6 @@ void RenderContextVulkanImpl::submitDrawList(
 
         if (drawPipeline != nullptr)
         {
-            m_vk->CmdBindPipeline(commandBuffer,
-                                  VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                  *drawPipeline);
-
             IAABB desiredScissorRect;
             switch (drawType)
             {
@@ -3596,24 +3697,16 @@ void RenderContextVulkanImpl::submitDrawList(
                 default:
                     // Default behavior is to use the batch's scissor rect,
                     // intersected with the render pass' rect.
-                    desiredScissorRect = batch.scissorRect.has_value()
-                                             ? renderPassScissorRect.intersect(
-                                                   batch.scissorRect.value())
-                                             : renderPassScissorRect;
+                    desiredScissorRect =
+                        batch.scissorRect.has_value()
+                            ? renderPassScissorRect.intersectOrEmpty(
+                                  batch.scissorRect.value())
+                            : renderPassScissorRect;
             }
 
-            if (desiredScissorRect.empty())
-            {
-                desiredScissorRect = {0, 0, 0, 0};
-            }
-
-            if (desiredScissorRect != currentScissorRect)
-            {
-                currentScissorRect = desiredScissorRect;
-
-                VkRect2D vkScissorRect = vkutil::rect2d(currentScissorRect);
-                m_vk->CmdSetScissor(commandBuffer, 0, 1, &vkScissorRect);
-            }
+            pipelineBinder.bind(commandBuffer,
+                                *drawPipeline,
+                                desiredScissorRect);
         }
 
         switch (drawType)
@@ -3651,9 +3744,9 @@ void RenderContextVulkanImpl::submitDrawList(
                     if (drawPipeline != nullptr)
                     {
                         m_vk->CmdDrawIndexed(commandBuffer,
-                                             gpu::PatchIndexCount(drawType),
+                                             batch.indexCountPerInstance,
                                              chunkPatchCount,
-                                             gpu::PatchBaseIndex(drawType),
+                                             batch.baseIndex,
                                              0,
                                              chunkFirstPatch);
                     }
@@ -3661,9 +3754,65 @@ void RenderContextVulkanImpl::submitDrawList(
                 break;
             }
 
+            case DrawType::msaaDynamicMidpointFans:
+            {
+                pendingTessPatchCount -= batch.elementCount;
+                if (drawPipeline == nullptr)
+                {
+                    break;
+                }
+
+                // Combined fast-path fill: borrowed coverage, fans, and stencil
+                // reset share this one dynamic-state pipeline. Draw the whole
+                // batch (instanced across non-overlapping paths) three times,
+                // updating dynamic state between passes. depthCompareOp stays
+                // baked at LESS so Hi-Z keeps culling; color is suppressed via
+                // color-write-enable, never the depth test. The combine is
+                // gated to GPUs that don't need the "renderpass interrupt"
+                // workaround, so a single draw covers the whole batch -- no
+                // InstanceChunker needed (its per-chunk interruptIfNeeded would
+                // split the three passes across render passes, which the
+                // stencil algorithm can't survive).
+                assert(!m_workarounds.needsInterruptibleRenderPasses());
+                m_vk->CmdBindVertexBuffers(
+                    commandBuffer,
+                    0,
+                    1,
+                    m_pathPatchVertexBuffer->vkBufferAddressOf(),
+                    ZERO_OFFSET);
+                m_vk->CmdBindIndexBuffer(commandBuffer,
+                                         *m_pathPatchIndexBuffer,
+                                         0,
+                                         VK_INDEX_TYPE_UINT16);
+                static constexpr DrawType Passes[] = {
+                    DrawType::msaaMidpointFanBorrowedCoverage,
+                    DrawType::msaaMidpointFans,
+                    DrawType::msaaMidpointFanStencilReset,
+                };
+                for (DrawType pass : Passes)
+                {
+                    gpu::PipelineState ps =
+                        gpu::get_pipeline_state(pass,
+                                                desc.interlockMode,
+                                                batch.shaderMiscFlags,
+                                                batch.drawContents,
+                                                desc.fixedFunctionColorOutput,
+                                                batch.firstBlendMode,
+                                                m_platformFeatures);
+                    pipelineBinder.setDynamicState(commandBuffer, ps);
+                    m_vk->CmdDrawIndexed(commandBuffer,
+                                         batch.indexCountPerInstance,
+                                         batch.elementCount,
+                                         batch.baseIndex,
+                                         0,
+                                         batch.baseElement);
+                }
+                break;
+            }
+
             case DrawType::clipReset:
             case DrawType::interiorTriangulation:
-            case DrawType::atlasBlit:
+            case DrawType::featherAtlasBlit:
             {
                 VkBuffer buffer = *m_triangleBuffer;
                 m_vk->CmdBindVertexBuffers(commandBuffer,
@@ -3687,9 +3836,15 @@ void RenderContextVulkanImpl::submitDrawList(
                 assert(desc.interlockMode == gpu::InterlockMode::atomics);
                 m_vk->CmdBindVertexBuffers(
                     commandBuffer,
-                    0,
+                    layout::ImageRectGeometryBufferBinding,
                     1,
                     m_imageRectVertexBuffer->vkBufferAddressOf(),
+                    ZERO_OFFSET);
+                m_vk->CmdBindVertexBuffers(
+                    commandBuffer,
+                    layout::ImageRectImageAttribBufferBinding,
+                    1,
+                    m_imageDrawInstanceBuffer->vkBufferAddressOf(),
                     ZERO_OFFSET);
                 m_vk->CmdBindIndexBuffer(commandBuffer,
                                          *m_imageRectIndexBuffer,
@@ -3698,11 +3853,11 @@ void RenderContextVulkanImpl::submitDrawList(
                 if (drawPipeline != nullptr)
                 {
                     m_vk->CmdDrawIndexed(commandBuffer,
-                                         std::size(gpu::kImageRectIndices),
-                                         1,
-                                         batch.baseElement,
+                                         batch.indexCountPerInstance,
+                                         batch.elementCount,
+                                         batch.baseIndex,
                                          0,
-                                         0);
+                                         batch.baseElement);
                 }
                 break;
             }
@@ -3720,15 +3875,21 @@ void RenderContextVulkanImpl::submitDrawList(
                                         batch.indexBuffer);
                 m_vk->CmdBindVertexBuffers(
                     commandBuffer,
-                    0,
+                    layout::ImageMeshVertexBufferBinding,
                     1,
                     vertexBuffer->currentBuffer()->vkBufferAddressOf(),
                     ZERO_OFFSET);
                 m_vk->CmdBindVertexBuffers(
                     commandBuffer,
-                    1,
+                    layout::ImageMeshUVBufferBinding,
                     1,
                     uvBuffer->currentBuffer()->vkBufferAddressOf(),
+                    ZERO_OFFSET);
+                m_vk->CmdBindVertexBuffers(
+                    commandBuffer,
+                    layout::ImageMeshImageAttribBufferBinding,
+                    1,
+                    m_imageDrawInstanceBuffer->vkBufferAddressOf(),
                     ZERO_OFFSET);
                 m_vk->CmdBindIndexBuffer(commandBuffer,
                                          *indexBuffer->currentBuffer(),
@@ -3737,11 +3898,11 @@ void RenderContextVulkanImpl::submitDrawList(
                 if (drawPipeline != nullptr)
                 {
                     m_vk->CmdDrawIndexed(commandBuffer,
+                                         batch.indexCountPerInstance,
                                          batch.elementCount,
-                                         1,
-                                         batch.baseElement,
+                                         batch.baseIndex,
                                          0,
-                                         0);
+                                         batch.baseElement);
                 }
                 break;
             }
@@ -3774,7 +3935,6 @@ void RenderContextVulkanImpl::postFlush(const RenderContext::FlushResources&)
 {
     // Recycle buffers.
     m_flushUniformBufferPool.recycle(std::move(m_flushUniformBuffer));
-    m_imageDrawUniformBufferPool.recycle(std::move(m_imageDrawUniformBuffer));
     m_pathBufferPool.recycle(std::move(m_pathBuffer));
     m_paintBufferPool.recycle(std::move(m_paintBuffer));
     m_paintAuxBufferPool.recycle(std::move(m_paintAuxBuffer));
@@ -3782,6 +3942,7 @@ void RenderContextVulkanImpl::postFlush(const RenderContext::FlushResources&)
     m_gradSpanBufferPool.recycle(std::move(m_gradSpanBuffer));
     m_tessSpanBufferPool.recycle(std::move(m_tessSpanBuffer));
     m_triangleBufferPool.recycle(std::move(m_triangleBuffer));
+    m_imageDrawInstanceBufferPool.recycle(std::move(m_imageDrawInstanceBuffer));
 }
 
 void RenderContextVulkanImpl::hotloadShaders(
@@ -3797,8 +3958,9 @@ void RenderContextVulkanImpl::hotloadShaders(
     m_tessellatePipeline =
         std::make_unique<TessellatePipeline>(m_pipelineManager.get(),
                                              m_workarounds);
-    m_atlasPipeline =
-        std::make_unique<AtlasPipeline>(m_pipelineManager.get(), m_workarounds);
+    m_featherAtlasPipeline =
+        std::make_unique<FeatherAtlasPipeline>(m_pipelineManager.get(),
+                                               m_workarounds);
 }
 
 void RenderContextVulkanImpl::startAsyncPipelineCreation(

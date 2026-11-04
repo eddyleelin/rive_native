@@ -56,16 +56,19 @@ public:
 #ifdef TESTING
     bool hasClipRect() const
     {
-        return m_stack.back().clipRectInverseMatrix != nullptr;
+        return m_renderStateStack.back().clipRectInverseMatrix != nullptr;
     }
-    const AABB& getClipRect() const { return m_stack.back().clipRect; }
+    const AABB& getClipRect() const
+    {
+        return m_renderStateStack.back().clipRect;
+    }
     const Mat2D& getClipRectMatrix() const
     {
-        return m_stack.back().clipRectMatrix;
+        return m_renderStateStack.back().clipRectMatrix;
     }
     float currentModulatedOpacity() const
     {
-        return m_stack.back().modulatedOpacity;
+        return m_renderStateStack.back().modulatedOpacity;
     }
 #endif
 
@@ -86,7 +89,7 @@ private:
     {
         success,
         failure,
-        clipEmpty,
+        fullyClipped,
     };
     [[nodiscard]] ApplyClipResult applyClip(gpu::Draw*);
 
@@ -96,24 +99,35 @@ private:
         size_t clipStackHeight = 0;
         AABB clipRect;
         Mat2D clipRectMatrix;
+        IAABB clipRectPixelBounds;
         const gpu::ClipRectInverseMatrix* clipRectInverseMatrix = nullptr;
-        bool clipIsEmpty = false;
         float modulatedOpacity = 1.0f;
+
+        // The pixel bounds for all clipping (clip rects *and* clip paths),
+        // which defaults to a maximally-large rectangle
+        IAABB overallClipPixelBounds = IAABB::makeMaximal();
     };
-    std::vector<RenderState> m_stack{1};
+    std::vector<RenderState> m_renderStateStack{1};
 
     struct ClipElement
     {
         ClipElement() = default;
-        ClipElement(const Mat2D&, const RiveRenderPath*, FillRule);
+        ClipElement(const Mat2D&,
+                    const RiveRenderPath*,
+                    FillRule,
+                    IAABB pixelBounds);
         ~ClipElement();
 
-        void reset(const Mat2D&, const RiveRenderPath*, FillRule);
+        void reset(const Mat2D&,
+                   const RiveRenderPath*,
+                   FillRule,
+                   IAABB pixelBounds);
         bool isEquivalent(const Mat2D&, const RiveRenderPath*) const;
 
         Mat2D matrix;
         uint64_t rawPathMutationID;
         AABB pathBounds;
+        IAABB pixelBounds;
         rcp<const RiveRenderPath> path;
         FillRule fillRule; // Bc RiveRenderPath fillRule can mutate during the
                            // artboard draw process.
@@ -127,9 +141,5 @@ private:
 
     // Path of the rectangle [0, 0, 1, 1]. Used to draw images.
     rcp<RiveRenderPath> m_unitRectPath;
-
-    // Used to build coarse path interiors for the "interior triangulation"
-    // algorithm.
-    RawPath m_scratchPath;
 };
 } // namespace rive

@@ -57,9 +57,9 @@ rcp<FocusNode> FocusData::focusNode()
     if (m_focusNode == nullptr)
     {
         m_focusNode = rcp<FocusNode>(new FocusNode(this));
-        m_focusNode->canFocus(m_CanFocus);
-        m_focusNode->canTouch(m_CanTouch);
-        m_focusNode->canTraverse(m_CanTraverse);
+        m_focusNode->canFocus((focusFlags() & canFocusBitmask) != 0);
+        m_focusNode->canTouch((focusFlags() & canTouchBitmask) != 0);
+        m_focusNode->canTraverse((focusFlags() & canTraverseBitmask) != 0);
         m_focusNode->edgeBehavior(
             static_cast<EdgeBehavior>(m_EdgeBehaviorValue));
         m_focusNode->name(name());
@@ -352,6 +352,12 @@ void FocusData::focused()
     {
         sibling->setFocusedState(true);
     }
+
+    auto* parentComponent = parent();
+    if (parentComponent != nullptr && parentComponent->is<TextInput>())
+    {
+        parentComponent->as<TextInput>()->focused();
+    }
 }
 
 void FocusData::blurred()
@@ -367,29 +373,21 @@ void FocusData::blurred()
     {
         sibling->setFocusedState(false);
     }
-}
 
-void FocusData::canFocusChanged()
-{
-    if (m_focusNode != nullptr)
+    auto* parentComponent = parent();
+    if (parentComponent != nullptr && parentComponent->is<TextInput>())
     {
-        m_focusNode->canFocus(m_CanFocus);
+        parentComponent->as<TextInput>()->blurred();
     }
 }
 
-void FocusData::canTouchChanged()
+void FocusData::focusFlagsChanged()
 {
     if (m_focusNode != nullptr)
     {
-        m_focusNode->canTouch(m_CanTouch);
-    }
-}
-
-void FocusData::canTraverseChanged()
-{
-    if (m_focusNode != nullptr)
-    {
-        m_focusNode->canTraverse(m_CanTraverse);
+        m_focusNode->canFocus((focusFlags() & canFocusBitmask) != 0);
+        m_focusNode->canTouch((focusFlags() & canTouchBitmask) != 0);
+        m_focusNode->canTraverse((focusFlags() & canTraverseBitmask) != 0);
     }
 }
 

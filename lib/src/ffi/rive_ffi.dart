@@ -239,6 +239,30 @@ final Pointer<Void> Function(Pointer<Void> dataContext)
         .lookup<NativeFunction<Pointer<Void> Function(Pointer<Void>)>>(
             'riveDataContextViewModelInstance')
         .asFunction();
+final Pointer<Void> Function(
+        Pointer<Void> file,
+        Pointer<Uint64> viewModelIndices,
+        Pointer<Uint64> instanceIndices,
+        int count) _riveDataContextFromInstances =
+    nativeLib
+        .lookup<
+            NativeFunction<
+                Pointer<Void> Function(Pointer<Void>, Pointer<Uint64>,
+                    Pointer<Uint64>, Uint64)>>('riveDataContextFromInstances')
+        .asFunction();
+final Pointer<Void> Function(Pointer<Void> dataContext, int index)
+    _dataContextViewModelInstanceAt = nativeLib
+        .lookup<NativeFunction<Pointer<Void> Function(Pointer<Void>, Uint64)>>(
+            'dataContextViewModelInstanceAt')
+        .asFunction();
+final Pointer<Void> Function(
+        Pointer<Pointer<Void>> instances, int count, Pointer<Void> parent)
+    _dataContextFromViewModelInstancePointers = nativeLib
+        .lookup<
+            NativeFunction<
+                Pointer<Void> Function(Pointer<Pointer<Void>>, Uint64,
+                    Pointer<Void>)>>('dataContextFromViewModelInstancePointers')
+        .asFunction();
 final Pointer<NativeFunction<Void Function(Pointer<Void>)>>
     _deleteDataContextNative =
     nativeLib.lookup<NativeFunction<Void Function(Pointer<Void>)>>(
@@ -376,6 +400,11 @@ final void Function(Pointer<Void> artboard, double opacity)
         .lookup<NativeFunction<Void Function(Pointer<Void>, Float)>>(
             'riveArtboardSetOpacity')
         .asFunction();
+final void Function(Pointer<Void> artboard, double hostOpacity)
+    _riveArtboardSetHostOpacity = nativeLib
+        .lookup<NativeFunction<Void Function(Pointer<Void>, Float)>>(
+            'riveArtboardSetHostOpacity')
+        .asFunction();
 final bool Function(Pointer<Void> artboard) _riveArtboardUpdatePass = nativeLib
     .lookup<NativeFunction<Bool Function(Pointer<Void>)>>(
         'riveArtboardUpdatePass')
@@ -402,6 +431,24 @@ final void Function(Pointer<Void> artboard, double height)
     _riveArtboardSetHeight = nativeLib
         .lookup<NativeFunction<Void Function(Pointer<Void>, Float)>>(
             'riveArtboardSetHeight')
+        .asFunction();
+final double Function(Pointer<Void> artboard) _riveArtboardGetOriginX = nativeLib
+    .lookup<NativeFunction<Float Function(Pointer<Void>)>>(
+        'riveArtboardGetOriginX')
+    .asFunction();
+final void Function(Pointer<Void> artboard, double value)
+    _riveArtboardSetOriginX = nativeLib
+        .lookup<NativeFunction<Void Function(Pointer<Void>, Float)>>(
+            'riveArtboardSetOriginX')
+        .asFunction();
+final double Function(Pointer<Void> artboard) _riveArtboardGetOriginY = nativeLib
+    .lookup<NativeFunction<Float Function(Pointer<Void>)>>(
+        'riveArtboardGetOriginY')
+    .asFunction();
+final void Function(Pointer<Void> artboard, double value)
+    _riveArtboardSetOriginY = nativeLib
+        .lookup<NativeFunction<Void Function(Pointer<Void>, Float)>>(
+            'riveArtboardSetOriginY')
         .asFunction();
 final double Function(Pointer<Void> artboard) _riveArtboardGetOriginalWidth =
     nativeLib
@@ -771,9 +818,7 @@ final void Function(
   Pointer<Void> ami,
   Pointer<Void> invocation,
 ) _stateMachineInstanceDispatchGamepadInvocation = nativeLib
-    .lookup<
-        NativeFunction<
-            Void Function(Pointer<Void>, Pointer<Void>)>>(
+    .lookup<NativeFunction<Void Function(Pointer<Void>, Pointer<Void>)>>(
       'stateMachineInstanceDispatchGamepadInvocation',
     )
     .asFunction();
@@ -1194,6 +1239,15 @@ final Pointer<Void> Function(Pointer<Void> file, int index, int indexInstance)
                     Pointer<Void>, Uint64, Uint64)>>('copyViewModelInstance')
         .asFunction();
 
+final void Function(
+        Pointer<Void> viewModelInstance, Pointer<Uint32> keepIds, int keepCount)
+    _pruneViewModelInstanceToProperties = nativeLib
+        .lookup<
+            NativeFunction<
+                Void Function(Pointer<Void>, Pointer<Uint32>,
+                    Uint64)>>('pruneViewModelInstanceToProperties')
+        .asFunction();
+
 final class _ViewModelInstanceBufferResponseStruct extends Struct {
   external Pointer<Uint8> data;
   @Size()
@@ -1338,6 +1392,11 @@ final int Function(Pointer<Void>, Pointer<Void>)
     _viewModelInstanceAssetImageResolveRuntimeIndex = nativeLib
         .lookup<NativeFunction<Uint32 Function(Pointer<Void>, Pointer<Void>)>>(
             'viewModelInstanceAssetImageResolveRuntimeIndex')
+        .asFunction();
+final int Function(Pointer<Void>, Pointer<Void>)
+    _viewModelInstanceAssetFontResolveRuntimeIndex = nativeLib
+        .lookup<NativeFunction<Uint32 Function(Pointer<Void>, Pointer<Void>)>>(
+            'viewModelInstanceAssetFontResolveRuntimeIndex')
         .asFunction();
 final void Function(Pointer<Void>, int) _setViewModelInstanceArtboardValue =
     nativeLib
@@ -1631,6 +1690,14 @@ abstract class _NativeVMIRuntime {
                       Pointer<Void> path)>>('vmiRuntimeGetAssetImageProperty')
           .asFunction();
   static final Pointer<Void> Function(
+          Pointer<Void> viewModel, Pointer<Void> path) getAssetFontProperty =
+      nativeLib
+          .lookup<
+              NativeFunction<
+                  Pointer<Void> Function(Pointer<Void> viewModel,
+                      Pointer<Void> path)>>('vmiRuntimeGetAssetFontProperty')
+          .asFunction();
+  static final Pointer<Void> Function(
           Pointer<Void> viewModel, Pointer<Void> path) getListProperty =
       nativeLib
           .lookup<
@@ -1752,6 +1819,16 @@ abstract class _NativeVMIAssetImageRuntime {
               NativeFunction<
                   Void Function(Pointer<Void> property,
                       Pointer<Void> value)>>('setVMIAssetImageRuntimeValue')
+          .asFunction();
+}
+
+abstract class _NativeVMIAssetFontRuntime {
+  static final void Function(Pointer<Void> property, Pointer<Void> value)
+      setValue = nativeLib
+          .lookup<
+              NativeFunction<
+                  Void Function(Pointer<Void> property,
+                      Pointer<Void> value)>>('setVMIAssetFontRuntimeValue')
           .asFunction();
 }
 
@@ -2134,6 +2211,54 @@ class FFIRiveFile extends File implements RiveFFIReference, Finalizable {
   }
 
   @override
+  InternalDataContext? internalDataContextFromInstances(
+      List<int> viewModelIndices, List<int> instanceIndices) {
+    assert(viewModelIndices.length == instanceIndices.length);
+    final count = viewModelIndices.length;
+    if (count == 0) return null;
+    final vmPtr = malloc.allocate<Uint64>(count * sizeOf<Uint64>());
+    final instPtr = malloc.allocate<Uint64>(count * sizeOf<Uint64>());
+    try {
+      for (var i = 0; i < count; i++) {
+        vmPtr[i] = viewModelIndices[i];
+        instPtr[i] = instanceIndices[i];
+      }
+      final ptr = _riveDataContextFromInstances(pointer, vmPtr, instPtr, count);
+      if (ptr == nullptr) return null;
+      return FFIRiveInternalDataContext(ptr);
+    } finally {
+      malloc.free(vmPtr);
+      malloc.free(instPtr);
+    }
+  }
+
+  @override
+  InternalDataContext? internalDataContextFromNativeInstances(
+      List<InternalViewModelInstance> instances,
+      {InternalDataContext? parent}) {
+    if (instances.isEmpty) return null;
+    final count = instances.length;
+    final ptrs =
+        malloc.allocate<Pointer<Void>>(count * sizeOf<Pointer<Void>>());
+    try {
+      for (var i = 0; i < count; i++) {
+        ptrs[i] = (instances[i] as FFIRiveInternalViewModelInstance).pointer;
+      }
+      final parentPtr = parent != null
+          ? (parent as FFIRiveInternalDataContext).pointer
+          : nullptr;
+      final ptr =
+          _dataContextFromViewModelInstancePointers(ptrs, count, parentPtr);
+      if (ptr == nullptr) {
+        return null;
+      }
+      return FFIRiveInternalDataContext(ptr);
+    } finally {
+      malloc.free(ptrs);
+    }
+  }
+
+  @override
   InternalViewModelInstance? copyViewModelInstance(
       int viewModelIndex, int instanceIndex) {
     var ptr =
@@ -2157,6 +2282,19 @@ class FFIRiveFile extends File implements RiveFFIReference, Finalizable {
       return null;
     }
     final r = _viewModelInstanceAssetImageResolveRuntimeIndex(
+        pointer, Pointer<Void>.fromAddress(coreAddress));
+    if (r < 0 || r == _uint32Max) {
+      return null;
+    }
+    return r;
+  }
+
+  @override
+  int? resolveViewModelInstanceAssetFontRuntimeIndex(int coreAddress) {
+    if (coreAddress == 0) {
+      return null;
+    }
+    final r = _viewModelInstanceAssetFontResolveRuntimeIndex(
         pointer, Pointer<Void>.fromAddress(coreAddress));
     if (r < 0 || r == _uint32Max) {
       return null;
@@ -2428,6 +2566,14 @@ class FFIRiveViewModelInstanceRuntime
   }
 
   @override
+  ViewModelInstanceAssetFont? font(String path) {
+    var ptr = _findPointerByPath(_NativeVMIRuntime.getAssetFontProperty, path);
+    return ptr == nullptr
+        ? null
+        : FFIViewModelInstanceAssetFontRuntime(ptr, _rootViewModelInstance);
+  }
+
+  @override
   ViewModelInstanceList? list(String path) {
     var ptr = _findPointerByPath(_NativeVMIRuntime.getListProperty, path);
     return ptr == nullptr
@@ -2657,6 +2803,21 @@ class FFIViewModelInstanceAssetImageRuntime
   set value(covariant FFIRenderImage? value) {
     _rootViewModelInstance.requestAdvance();
     _NativeVMIAssetImageRuntime.setValue(pointer, value?.pointer ?? nullptr);
+  }
+}
+
+class FFIViewModelInstanceAssetFontRuntime
+    extends FFIViewModelInstanceValueRuntime
+    implements ViewModelInstanceAssetFont {
+  FFIViewModelInstanceAssetFontRuntime(
+    super._pointer,
+    super._rootViewModelInstance,
+  );
+
+  @override
+  set value(covariant FontFFI? value) {
+    _rootViewModelInstance.requestAdvance();
+    _NativeVMIAssetFontRuntime.setValue(pointer, value?.fontPtr ?? nullptr);
   }
 }
 
@@ -3661,6 +3822,9 @@ class FFIRiveArtboard extends Artboard
   set opacity(double value) => _riveArtboardSetOpacity(pointer, value);
 
   @override
+  set hostOpacity(double value) => _riveArtboardSetHostOpacity(pointer, value);
+
+  @override
   double get width => _riveArtboardGetWidth(pointer);
 
   @override
@@ -3671,6 +3835,18 @@ class FFIRiveArtboard extends Artboard
 
   @override
   set height(double value) => _riveArtboardSetHeight(pointer, value);
+
+  @override
+  double get originX => _riveArtboardGetOriginX(pointer);
+
+  @override
+  set originX(double value) => _riveArtboardSetOriginX(pointer, value);
+
+  @override
+  double get originY => _riveArtboardGetOriginY(pointer);
+
+  @override
+  set originY(double value) => _riveArtboardSetOriginY(pointer, value);
 
   @override
   double get heightOriginal => _riveArtboardGetOriginalHeight(pointer);
@@ -4170,6 +4346,25 @@ class FFIRiveInternalViewModelInstance extends InternalViewModelInstance
   }
 
   @override
+  void pruneToProperties(List<int> keepPropertyIds) {
+    if (_pointer == nullptr) {
+      return;
+    }
+    final count = keepPropertyIds.length;
+    final idsPtr = count == 0 ? nullptr : malloc<Uint32>(count);
+    try {
+      for (var i = 0; i < count; i++) {
+        idsPtr[i] = keepPropertyIds[i];
+      }
+      _pruneViewModelInstanceToProperties(_pointer, idsPtr, count);
+    } finally {
+      if (count != 0) {
+        malloc.free(idsPtr);
+      }
+    }
+  }
+
+  @override
   void dispose() {
     if (_pointer == nullptr) {
       return;
@@ -4396,6 +4591,13 @@ class FFIRiveInternalDataContext extends InternalDataContext
   InternalViewModelInstance get viewModelInstance {
     final viewModelInstancePointer = _riveDataContextViewModelInstance(pointer);
     return FFIRiveInternalViewModelInstance(viewModelInstancePointer);
+  }
+
+  @override
+  InternalViewModelInstance? viewModelInstanceAt(int index) {
+    final ptr = _dataContextViewModelInstanceAt(pointer, index);
+    if (ptr == nullptr) return null;
+    return FFIRiveInternalViewModelInstance(ptr);
   }
 
   @override

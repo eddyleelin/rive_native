@@ -327,6 +327,213 @@ EXPORT void yogaStyleSetAspectRatio(YGStyle* style, float ratio)
     style->aspectRatio() = YGFloatOptional(ratio);
 }
 
+// Grid (yoga grid backport) --------------------------------------------------
+// collection: 0=templateColumns 1=templateRows 2=autoColumns 3=autoRows
+// track type: 0=auto 1=points 2=percent 3=fr 4=minmax
+// line: 0=columnStart 1=columnEnd 2=rowStart 3=rowEnd
+// line type: 0=auto 1=index 2=span
+
+static YGStyleSizeLength gridSizeLength(int type, float value)
+{
+    switch (type)
+    {
+        case 1:
+            return YGStyleSizeLength::points(value);
+        case 2:
+            return YGStyleSizeLength::percent(value);
+        case 3:
+            return YGStyleSizeLength::stretch(value);
+        default:
+            return YGStyleSizeLength::ofAuto();
+    }
+}
+
+static YGGridTrackSize gridTrackSize(int type, float value)
+{
+    switch (type)
+    {
+        case 1:
+            return YGGridTrackSize::length(value);
+        case 2:
+            return YGGridTrackSize::percent(value);
+        case 3:
+            return YGGridTrackSize::fr(value);
+        default:
+            return YGGridTrackSize::auto_();
+    }
+}
+
+static size_t gridTrackCount(YGStyle* style, int collection)
+{
+    switch (collection)
+    {
+        case 0:
+            return style->gridTemplateColumns().size();
+        case 1:
+            return style->gridTemplateRows().size();
+        case 2:
+            return style->gridAutoColumns().size();
+        case 3:
+            return style->gridAutoRows().size();
+    }
+    return 0;
+}
+
+static void setGridTrackAt(YGStyle* style,
+                           int collection,
+                           uint32_t index,
+                           YGGridTrackSize track)
+{
+    if (index >= gridTrackCount(style, collection))
+    {
+        return;
+    }
+    switch (collection)
+    {
+        case 0:
+            style->setGridTemplateColumnAt(index, track);
+            break;
+        case 1:
+            style->setGridTemplateRowAt(index, track);
+            break;
+        case 2:
+            style->setGridAutoColumnAt(index, track);
+            break;
+        case 3:
+            style->setGridAutoRowAt(index, track);
+            break;
+    }
+}
+
+EXPORT void yogaStyleSetGridTrackCount(YGStyle* style,
+                                       int collection,
+                                       uint32_t count)
+{
+    if (style == nullptr)
+    {
+        return;
+    }
+    switch (collection)
+    {
+        case 0:
+            style->resizeGridTemplateColumns(count);
+            break;
+        case 1:
+            style->resizeGridTemplateRows(count);
+            break;
+        case 2:
+            style->resizeGridAutoColumns(count);
+            break;
+        case 3:
+            style->resizeGridAutoRows(count);
+            break;
+    }
+}
+
+EXPORT void yogaStyleSetGridTrack(YGStyle* style,
+                                  int collection,
+                                  uint32_t index,
+                                  int type,
+                                  float value)
+{
+    if (style == nullptr)
+    {
+        return;
+    }
+    setGridTrackAt(style, collection, index, gridTrackSize(type, value));
+}
+
+EXPORT void yogaStyleSetGridTrackMinMax(YGStyle* style,
+                                        int collection,
+                                        uint32_t index,
+                                        int minType,
+                                        float minValue,
+                                        int maxType,
+                                        float maxValue)
+{
+    if (style == nullptr)
+    {
+        return;
+    }
+    setGridTrackAt(style,
+                   collection,
+                   index,
+                   YGGridTrackSize::minmax(gridSizeLength(minType, minValue),
+                                           gridSizeLength(maxType, maxValue)));
+}
+
+EXPORT void yogaStyleSetGridLine(YGStyle* style, int line, int type, int value)
+{
+    if (style == nullptr)
+    {
+        return;
+    }
+    YGGridLine gridLine;
+    switch (type)
+    {
+        case 1:
+            gridLine = YGGridLine::fromInteger(value);
+            break;
+        case 2:
+            gridLine = YGGridLine::span(value);
+            break;
+        default:
+            gridLine = YGGridLine::auto_();
+            break;
+    }
+    switch (line)
+    {
+        case 0:
+            style->setGridColumnStart(gridLine);
+            break;
+        case 1:
+            style->setGridColumnEnd(gridLine);
+            break;
+        case 2:
+            style->setGridRowStart(gridLine);
+            break;
+        case 3:
+            style->setGridRowEnd(gridLine);
+            break;
+    }
+}
+
+EXPORT int yogaStyleGetJustifyItems(YGStyle* style)
+{
+    if (style == nullptr)
+    {
+        return 0;
+    }
+    return (int)style->justifyItems();
+}
+
+EXPORT void yogaStyleSetJustifyItems(YGStyle* style, int justify)
+{
+    if (style == nullptr)
+    {
+        return;
+    }
+    style->setJustifyItems((YGJustify)justify);
+}
+
+EXPORT int yogaStyleGetJustifySelf(YGStyle* style)
+{
+    if (style == nullptr)
+    {
+        return 0;
+    }
+    return (int)style->justifySelf();
+}
+
+EXPORT void yogaStyleSetJustifySelf(YGStyle* style, int justify)
+{
+    if (style == nullptr)
+    {
+        return;
+    }
+    style->setJustifySelf((YGJustify)justify);
+}
+
 EXPORT void yogaStyleSetMargin(YGStyle* style, int edge, float value, int unit)
 {
     if (style == nullptr)
@@ -841,6 +1048,32 @@ EXPORT Layout yogaNodeGetPadding(LayoutData* layoutData)
             YGNodeLayoutGetPadding(node, YGEdgeTop),
             YGNodeLayoutGetPadding(node, YGEdgeRight),
             YGNodeLayoutGetPadding(node, YGEdgeBottom)};
+}
+EXPORT uint32_t yogaNodeGetGridColumnLineCount(LayoutData* layoutData)
+{
+    return layoutData == nullptr
+               ? 0
+               : YGNodeLayoutGetGridColumnLineCount(&layoutData->node);
+}
+EXPORT float yogaNodeGetGridColumnLineOffset(LayoutData* layoutData,
+                                             uint32_t index)
+{
+    return layoutData == nullptr
+               ? 0.0f
+               : YGNodeLayoutGetGridColumnLineOffset(&layoutData->node, index);
+}
+EXPORT uint32_t yogaNodeGetGridRowLineCount(LayoutData* layoutData)
+{
+    return layoutData == nullptr
+               ? 0
+               : YGNodeLayoutGetGridRowLineCount(&layoutData->node);
+}
+EXPORT float yogaNodeGetGridRowLineOffset(LayoutData* layoutData,
+                                          uint32_t index)
+{
+    return layoutData == nullptr
+               ? 0.0f
+               : YGNodeLayoutGetGridRowLineOffset(&layoutData->node, index);
 }
 EXPORT YGValue yogaStyleGetFlexBasis(YGStyle* style)
 {

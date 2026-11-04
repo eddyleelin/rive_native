@@ -2,6 +2,7 @@
 #ifndef _RIVE_LUA_LIBS_HPP_
 #define _RIVE_LUA_LIBS_HPP_
 #include "lua.h"
+#include "rive/text_engine.hpp"
 #include "lualib.h"
 #include "rive/animation/linear_animation_instance.hpp"
 #include "rive/assets/file_asset.hpp"
@@ -171,6 +172,7 @@ enum class LuaAtoms : int16_t
     getEnum,
     getIndex,
     getImage,
+    getFont,
     values,
     addListener,
     removeListener,
@@ -346,6 +348,9 @@ enum class LuaAtoms : int16_t
     transformVec4,
     writeToBuffer,
     invertAffine,
+
+    // Vector
+    writeVec4,
 
     // Gamepad
     axes,
@@ -1073,19 +1078,34 @@ public:
     ScriptReffedArtboard(File* file,
                          std::unique_ptr<ArtboardInstance>&& artboardInstance,
                          rcp<ViewModelInstance> viewModelInstance,
-                         rcp<DataContext> parentDataContext);
+                         rcp<DataContext> parentDataContext,
+                         ScriptingContext* scriptingContext
+#ifdef WITH_RIVE_TOOLS
+                         ,
+                         rcp<File> filePin = nullptr
+#endif
+    );
 
     ~ScriptReffedArtboard();
     rive::File* file();
     Artboard* artboard();
     StateMachineInstance* stateMachine();
     rcp<ViewModelInstance> viewModelInstance() { return m_viewModelInstance; }
+#ifdef WITH_RIVE_TOOLS
+    rcp<File> filePin() { return m_filePin; }
+#endif
 
 private:
     File* m_file;
+#ifdef WITH_RIVE_TOOLS
+    // Pins a host file the script does not own. Never set for the script's
+    // own file: that would cycle File -> VM -> userdata -> File and leak.
+    rcp<File> m_filePin;
+#endif
     std::unique_ptr<ArtboardInstance> m_artboard;
     std::unique_ptr<StateMachineInstance> m_stateMachine;
     rcp<ViewModelInstance> m_viewModelInstance;
+    ScriptingContext* m_scriptingContext = nullptr;
 };
 
 class ScriptedArtboard
@@ -1095,7 +1115,12 @@ public:
                      File* file,
                      std::unique_ptr<ArtboardInstance>&& artboardInstance,
                      rcp<ViewModelInstance> viewModelInstance,
-                     rcp<DataContext> dataContext);
+                     rcp<DataContext> dataContext
+#ifdef WITH_RIVE_TOOLS
+                     ,
+                     rcp<File> filePin = nullptr
+#endif
+    );
     ~ScriptedArtboard();
 
     static constexpr uint8_t luaTag = LUA_T_COUNT + 10;
@@ -1214,12 +1239,14 @@ public:
     {
         return m_viewModelInstance;
     }
+    rcp<ViewModel> viewModel() const { return m_viewModel; }
 
 private:
     lua_State* m_state;
     rcp<ViewModel> m_viewModel;
     rcp<ViewModelInstance> m_viewModelInstance;
     std::unordered_map<std::string, int> m_propertyRefs;
+    ScriptingContext* m_scriptingContext = nullptr;
 };
 
 class ScriptedPropertyViewModel : public ScriptedProperty,
@@ -1365,6 +1392,28 @@ public:
     void setValue(ScriptedImage* scriptedImage);
 };
 
+class ScriptedFont
+{
+public:
+    rcp<Font> font;
+    static constexpr uint8_t luaTag = LUA_T_COUNT + 65;
+    static constexpr const char* luaName = "Font";
+    static constexpr bool hasMetatable = false;
+};
+
+class ViewModelInstanceAssetFont;
+class ScriptedPropertyFont : public ScriptedProperty
+{
+public:
+    ScriptedPropertyFont(lua_State* L, rcp<ViewModelInstanceAssetFont> value);
+    static constexpr uint8_t luaTag = LUA_T_COUNT + 66;
+    static constexpr const char* luaName = "Property<Font>";
+    static constexpr bool hasMetatable = true;
+
+    int pushValue();
+    void setValue(ScriptedFont* scriptedFont);
+};
+
 // Make
 // ScriptedPropertyViewModel
 //      - Nullable ViewModelInstanceValue (ViewModelInstanceViewModel)
@@ -1476,6 +1525,10 @@ public:
     virtual void printEndLine() = 0;
     virtual int pCall(lua_State* state, int nargs, int nresults) = 0;
 
+    // When true, the VM's owner sets up the Lua `Data` global itself (the
+    // editor builds it in Dart), so File should not call initializeLuaData.
+    virtual bool initializesDataGlobalExternally() const { return false; }
+
     // Add a module to be registered later via performRegistration()
     void addModule(ModuleDetails* moduleDetails);
     // Perform registration of all added modules, handling dependencies and
@@ -1484,6 +1537,45 @@ public:
     // Called when a module is required but not found during registration
     void recordMissingDependency(const std::string& requiringModule,
                                  const std::string& missingModule);
+
+    // Track detached view model instances (no parents, e.g. created via
+    // vm:instance()) so they can be advanced at the end of each frame — they
+    // are not reachable from the artboard's bound view model tree, so the
+    // normal DataContext advance never reaches them. Instances are keyed by
+    // owner lifetime, not by Lua-wrapper GC: every live owner (a
+    // ScriptedViewModel wrapper, a ScriptReffedArtboard) registers on
+    // construction and unregisters on destruction. The context holds a strong
+    // reference for as long as any owner is alive, so the instance survives
+    // even if the script drops its wrapper while it is still bound to a
+    // scripted artboard.
+    void trackViewModelInstance(rcp<ViewModelInstance> instance);
+    void untrackViewModelInstance(ViewModelInstance* instance);
+    // Advances every tracked instance that has no parents. Instances with
+    // parents are already advanced through the bound tree (and via their
+    // detached-root ancestor's recursion), so they are skipped.
+    void advanceDetachedViewModels();
+
+    // Scoped :shader / :blob reference resolution. Bare names resolve in the
+    // calling chunk's scope first, then among host assets;
+    // lib:<label>/<path> matches any version of the label's library, whose
+    // mangled names self-describe as <label>[#id]@<version>/<path>.
+    class ScopedAssetReference
+    {
+    public:
+        ScopedAssetReference(lua_State* L, const char* reference);
+        // Rank a registered asset (full path) with its short name: 0 no
+        // match, 2 the caller's own library, 1 host or lib: match.
+        int match(const std::string& registeredName,
+                  const std::string& shortName) const;
+
+    private:
+        bool matchesLibrary(const std::string& registeredName) const;
+
+        std::string m_label;
+        std::string m_path;
+        std::string m_scopePrefix;
+        std::string m_bare;
+    };
 
     // Ore GPU context for this VM, derived from the render factory. Null when
     // there is no render context, or it is not GPU-backed. Returned as void* so
@@ -1568,6 +1660,18 @@ private:
     std::unordered_map<std::string, ModuleDetails*> m_moduleLookup;
     std::unordered_set<ModuleDetails*> m_pendingModules;
 
+    // Detached view model instances tracked for end-of-frame advance, keyed by
+    // instance pointer. Each entry keeps a strong reference alive and counts
+    // how many live owners registered it; the entry is erased when the count
+    // returns to zero.
+    struct TrackedViewModelInstance
+    {
+        rcp<ViewModelInstance> instance;
+        int registrations = 0;
+    };
+    std::unordered_map<ViewModelInstance*, TrackedViewModelInstance>
+        m_trackedViewModelInstances;
+
 #ifdef WITH_RIVE_TOOLS
     // Editor-only: Map from asset ID to generator function ref.
     // Allows direct ScriptedObject reinitialization without regenerating
@@ -1592,6 +1696,8 @@ public:
     void disposeOrphanScriptedProperties();
     void registerShaderRstb(std::string name, std::vector<uint8_t> bytes);
     const std::vector<uint8_t>* findShaderRstb(const std::string& name) const;
+    const std::vector<uint8_t>* findShaderRstb(
+        const ScopedAssetReference& reference) const;
     // Transfers all RSTB blobs out of this context (used during VM adoption
     // to preserve blobs across context replacement).
     std::unordered_map<std::string, std::vector<uint8_t>> takeShaderRstbs()
@@ -2193,16 +2299,23 @@ static void interruptCPP(lua_State* L, int gc)
 namespace rive
 {
 class ShaderAsset;
-}
-// Load a shader by name into a ScriptedShader (populates both vertex and
-// fragment modules for GLSL targets with split entry points).
+class File;
+} // namespace rive
+// Load a shader by scoped reference into a ScriptedShader (populates both
+// vertex and fragment modules for GLSL targets with split entry points).
 // Checks ScriptingContext::m_shaderRstbs first (editor path, compiled
 // during requestVM), then |fileAsset| if non-null (runtime .riv path).
 // Returns false on failure.
-bool lua_gpu_load_shader_by_name(rive::ScriptedShader* out,
-                                 rive::ScriptingContext* context,
-                                 const char* name,
-                                 rive::ShaderAsset* fileAsset);
+bool lua_gpu_load_shader_by_name(
+    rive::ScriptedShader* out,
+    rive::ScriptingContext* context,
+    const rive::ScriptingContext::ScopedAssetReference& reference,
+    rive::ShaderAsset* fileAsset);
+
+// The file's ShaderAsset best matching a scoped reference, null when none.
+rive::ShaderAsset* lua_gpu_find_shader_asset(
+    rive::File* file,
+    const rive::ScriptingContext::ScopedAssetReference& reference);
 
 // Compile a shader by name and push the resulting ScriptedShader onto the
 // Lua stack. Returns 1 on success, 0 on failure. Declared here (implemented
@@ -2216,6 +2329,16 @@ int lua_gpu_push_shader_by_name(lua_State* L, const char* name);
 // available, otherwise returns conservative defaults. Always returns 1.
 // Implemented in lua_scripted_context.cpp.
 int lua_push_gpu_features(lua_State* L);
+
+#ifdef WITH_RIVE_TOOLS
+// Push a ScriptedBlob copying `data`, or an empty blob when data is null or
+// size is 0. Only tooling constructs blobs from loose bytes; the runtime
+// wraps in-file assets. Implemented in lua_blob.cpp.
+int lua_push_blob(lua_State* L,
+                  const char* name,
+                  const uint8_t* data,
+                  size_t size);
+#endif
 
 #endif
 #endif

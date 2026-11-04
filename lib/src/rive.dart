@@ -244,6 +244,18 @@ abstract class File {
   InternalDataContext? internalDataContext(
       int viewModelIndex, int instanceIndex);
 
+  /// Creates a DataContext with multiple VM instances in one call.
+  @internal
+  InternalDataContext? internalDataContextFromInstances(
+      List<int> viewModelIndices, List<int> instanceIndices);
+
+  /// Creates a DataContext from already-created native VM instances,
+  /// optionally with a parent DataContext.
+  @internal
+  InternalDataContext? internalDataContextFromNativeInstances(
+      List<InternalViewModelInstance> instances,
+      {InternalDataContext? parent});
+
   @internal
   InternalViewModelInstance? copyViewModelInstance(
       int viewModelIndex, int instanceIndex);
@@ -266,6 +278,15 @@ abstract class File {
   /// Returns `null` when unresolved (including `UINT32_MAX`).
   @internal
   int? resolveViewModelInstanceAssetImageRuntimeIndex(int coreAddress);
+
+  /// Resolve the runtime file asset index for a data-bound font property.
+  ///
+  /// [coreAddress] is [InternalViewModelInstanceValue.instancePointerAddress]
+  /// for the property (the native `ViewModelInstanceAssetFont*`).
+  ///
+  /// Returns `null` when unresolved (including `UINT32_MAX`).
+  @internal
+  int? resolveViewModelInstanceAssetFontRuntimeIndex(int coreAddress);
 
   /// Updates the scripting state (Lua VM) associated with this file.
   /// This allows reusing an existing file with a new VM without regenerating it.
@@ -559,6 +580,12 @@ abstract interface class ViewModelInstance
   ///
   /// {@macro property_path}
   ViewModelInstanceAssetImage? image(String path);
+
+  /// Access a property instance of type [ViewModelInstanceAssetFont]
+  /// belonging to the view model instance or to a nested view model instance.
+  ///
+  /// {@macro property_path}
+  ViewModelInstanceAssetFont? font(String path);
 
   /// Access a property instance of type [ViewModelInstanceList]
   /// belonging to the view model instance or to a nested view model instance.
@@ -944,6 +971,24 @@ abstract interface class ViewModelInstanceAssetImage
   set value(RenderImage? value);
 }
 
+/// A Rive view model property of type [Font] that represents an asset
+/// font value.
+abstract interface class ViewModelInstanceAssetFont
+    implements ViewModelInstanceValue {
+  /// Sets the value of the property.
+  ///
+  /// To create a [Font] use the [Factory.decodeFont] method.
+  ///
+  /// #### Example
+  ///
+  /// ```dart
+  /// final bytes = await rootBundle.load("assets/your_font.ttf");
+  /// final font = await rive.Factory.rive
+  ///     .decodeFont(bytes.buffer.asUint8List());
+  /// ```
+  set value(Font? value);
+}
+
 /// A Rive view model property of type [List<ViewModelInstance>] that represents
 /// a list of view model instances.
 abstract interface class ViewModelInstanceList
@@ -1249,6 +1294,12 @@ abstract class Artboard {
   /// Sets the opacity of the artboard (0.0 to 1.0).
   set opacity(double value);
 
+  /// Sets an opacity imposed by a host (e.g. a nested-artboard host) on this
+  /// instance. Kept separate from [opacity] so the artboard's own (animated /
+  /// data-bound) opacity is preserved; the two are multiplied together when the
+  /// artboard propagates opacity to its contents.
+  set hostOpacity(double value);
+
   /// The width from bounds. See [bounds].
   double get widthBounds => bounds.width;
 
@@ -1272,6 +1323,19 @@ abstract class Artboard {
 
   /// Sets the height of the artboard.
   set height(double value);
+
+  /// The artboard's origin X factor (0-1). For a mounted nested artboard this
+  /// can be overridden to reposition its origin.
+  double get originX;
+
+  /// Sets the artboard's origin X factor (0-1).
+  set originX(double value);
+
+  /// The artboard's origin Y factor (0-1).
+  double get originY;
+
+  /// Sets the artboard's origin Y factor (0-1).
+  set originY(double value);
 
   /// Resets the artboard size to its original dimensions.
   void resetArtboardSize();
@@ -1445,6 +1509,7 @@ abstract class InternalDataBind {
 @internal
 abstract class InternalDataContext {
   InternalViewModelInstance get viewModelInstance;
+  InternalViewModelInstance? viewModelInstanceAt(int index);
   void dispose();
 }
 
@@ -1568,6 +1633,13 @@ abstract class InternalViewModelInstance {
       int index, String name, int propertyType);
   InternalViewModelInstanceArtboard propertyArtboard(
       int index, String name, int propertyType);
+
+  /// Prunes this instance down to only the given runtime property ids, removing
+  /// every other property value. Used to turn a full copy of a nested-artboard
+  /// override instance into a sparse instance containing only the
+  /// explicitly-overridden properties.
+  void pruneToProperties(List<int> keepPropertyIds);
+
   String uniqueId();
   void dispose();
 }

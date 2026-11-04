@@ -1,6 +1,6 @@
 {
     "name": "@rive-app/flutter-native-wasm",
-    "version": "42.0.0",
+    "version": "44.0.0",
     "description": "WASM portion of Rive's Flutter runtime.",
     "homepage": "https://rive.app",
     "private": false,

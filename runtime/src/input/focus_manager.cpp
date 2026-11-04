@@ -9,6 +9,7 @@
 #include "rive/focus_data.hpp"
 #include "rive/math/aabb.hpp"
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <limits>
 #include <unordered_set>
@@ -44,6 +45,10 @@ static bool focusNodeEligibleForTraversal(FocusNode* node)
     }
     return focusNodeEligibleForFocus(node);
 }
+
+// Defined later in this file; used by setFocus to descend a scope to its first
+// eligible leaf.
+static FocusNode* getFirstLeaf(FocusNode* node, const FocusManager* manager);
 
 void FocusManager::dropFocusIfFocusTargetHidden()
 {
@@ -105,6 +110,24 @@ void FocusManager::removeManager(rcp<FocusNode> node)
 
 void FocusManager::setFocus(rcp<FocusNode> node)
 {
+    // Focus always rests on a leaf: if handed a scope (a node with eligible
+    // traversable descendants), descend to its first eligible leaf — matching
+    // Tab/arrow traversal, which never lands focus on a scope. Falls back to
+    // the node itself when it has no eligible leaf.
+    //
+    // Gate the descent on the requested target being eligible for focus, so a
+    // programmatic focus on an ineligible target (canFocus==false, collapsed,
+    // hidden, opacity 0, ...) stays a no-op as before, rather than reaching an
+    // eligible descendant and bypassing the early-return guards below.
+    if (node != nullptr && focusNodeEligibleForFocus(node.get()))
+    {
+        FocusNode* leaf = getFirstLeaf(node.get(), this);
+        if (leaf != nullptr)
+        {
+            node = ref_rcp(leaf);
+        }
+    }
+
     if (node == m_primaryFocus)
     {
         return;
@@ -156,32 +179,50 @@ void FocusManager::addChild(rcp<FocusNode> parent, rcp<FocusNode> child)
         return;
     }
 
-    // Remove from old location first
+    size_t index = parent ? parent->children().size() : m_rootNodes.size();
+    addChild(std::move(parent), std::move(child), index);
+}
+
+void FocusManager::addChild(rcp<FocusNode> parent,
+                            rcp<FocusNode> child,
+                            size_t index)
+{
+    if (!child)
+    {
+        return;
+    }
+    // The child (and its subtree) joins this manager; root insertions below
+    // don't pass through FocusNode::insertChild, so invalidate here.
+    markFocusableContentDirty();
     if (child->parent())
     {
         child->removeFromParent();
     }
+    else if (child->m_manager != nullptr && child->m_manager != this)
+    {
+        // The child is a root of a DIFFERENT manager (e.g. a scope migrating
+        // from a nested state machine's internal manager to the parent). Erase
+        // it from that manager's root list so it belongs to exactly one
+        // manager.
+        child->m_manager->eraseRoot(child);
+    }
     else
     {
-        // Remove from root nodes if it was a root
-        auto it = std::find(m_rootNodes.begin(), m_rootNodes.end(), child);
-        if (it != m_rootNodes.end())
-        {
-            m_rootNodes.erase(it);
-        }
+        eraseRoot(child);
     }
-
-    // Set the manager reference on the child
     child->m_manager = this;
-
     if (parent)
     {
-        parent->addChild(std::move(child));
+        parent->insertChild(index, std::move(child));
     }
     else
     {
-        // Add to root nodes
-        m_rootNodes.push_back(std::move(child));
+        if (index > m_rootNodes.size())
+        {
+            index = m_rootNodes.size();
+        }
+        m_rootNodes.insert(m_rootNodes.begin() + static_cast<ptrdiff_t>(index),
+                           std::move(child));
     }
 }
 
@@ -198,6 +239,35 @@ void FocusManager::removeChild(rcp<FocusNode> child)
         clearFocus();
     }
 
+    detachChild(std::move(child));
+}
+
+void FocusManager::detachChild(rcp<FocusNode> child)
+{
+    if (!child)
+    {
+        return;
+    }
+    // Usually redundant with the parent-side notification in
+    // removeFromParent() / eraseRoot(), but load-bearing when the detached
+    // node's parent isn't manager-attached (m_manager == nullptr), where
+    // neither downstream mark can fire.
+    markFocusableContentDirty();
+
+    // Removing a node takes its whole subtree out of the manager, so clear
+    // m_manager on every descendant too: a descendant held elsewhere (e.g. a
+    // persistent NestedArtboard scope) must not retain a pointer to a manager
+    // it no longer belongs to.
+    removeManager(child);
+
+    // NOTE: unlike removeChild, this intentionally does NOT clear focus. The
+    // node stays alive (held by m_primaryFocus and the caller) and its
+    // hasFocus flag survives, so reordering an existing node preserves focus
+    // and fires no blur/focus callbacks. A genuinely re-parented focused node
+    // keeps its hasFocus flag but its new ancestors won't carry it; that only
+    // affects notifyFocusChange's blur-walk on a later focus change, not input
+    // bubbling (which walks parent() directly).
+
     // Clear the manager reference
     child->m_manager = nullptr;
 
@@ -207,12 +277,19 @@ void FocusManager::removeChild(rcp<FocusNode> child)
     }
     else
     {
-        // Remove from root nodes
-        auto it = std::find(m_rootNodes.begin(), m_rootNodes.end(), child);
-        if (it != m_rootNodes.end())
-        {
-            m_rootNodes.erase(it);
-        }
+        eraseRoot(child);
+    }
+}
+
+void FocusManager::eraseRoot(const rcp<FocusNode>& node)
+{
+    auto it = std::find(m_rootNodes.begin(), m_rootNodes.end(), node);
+    if (it != m_rootNodes.end())
+    {
+        m_rootNodes.erase(it);
+        // Covers root removal on THIS manager even when reached from another
+        // manager's addChild (scope migration between managers).
+        markFocusableContentDirty();
     }
 }
 
@@ -272,12 +349,17 @@ static bool getRootBounds(FocusNode* node, AABB& outBounds)
     return false;
 }
 
-// Helper to check if a node is a leaf (no traversable children)
+static bool focusNodeTraversable(FocusNode* node);
+
+// Helper to check if a node is a leaf (no traversable children). Uses the same
+// predicate as Tab traversal so directional navigation and Tab agree on what
+// counts as a scope: a child that is a transparent structural scope (canFocus
+// false) still makes this node a non-leaf when a focusable lives beneath it.
 static bool isLeaf(FocusNode* node)
 {
     for (const auto& child : node->children())
     {
-        if (child->canFocus() && child->canTraverse())
+        if (focusNodeTraversable(child.get()))
         {
             return false;
         }
@@ -301,6 +383,39 @@ static void collectAllTraversableNodes(const std::vector<rcp<FocusNode>>& nodes,
         // Recurse into children
         collectAllTraversableNodes(node->children(), result);
     }
+}
+
+static bool subtreeHasFocusableContent(const std::vector<rcp<FocusNode>>& nodes)
+{
+    for (const auto& node : nodes)
+    {
+        // A node backed by focusable data counts even while it is currently
+        // ineligible for traversal: eligibility (collapse, hidden ancestors)
+        // and canFocus/canTraverse are runtime state that can change on any
+        // frame, while this signal gates one-time setup in high-level
+        // runtimes (e.g. attaching tab/shift+tab listeners in JS). Unbacked
+        // nodes with canFocus=false are structural scopes and don't count on
+        // their own.
+        if (node->focusable() != nullptr || node->canFocus())
+        {
+            return true;
+        }
+        if (subtreeHasFocusableContent(node->children()))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool FocusManager::hasFocusableContent() const
+{
+    if (m_focusableContentDirty)
+    {
+        m_hasFocusableContent = subtreeHasFocusableContent(m_rootNodes);
+        m_focusableContentDirty = false;
+    }
+    return m_hasFocusableContent;
 }
 
 // Calculate overlap on the orthogonal axis (perpendicular to navigation)
@@ -740,6 +855,31 @@ void FocusManager::notifyFocusChange(FocusNode* oldFocus, FocusNode* newFocus)
 #endif
 }
 
+static bool hasEligibleTraversableChildInFocusTree(FocusNode* node);
+
+// True if this node is a focusable traversal target itself, or the transparent
+// scope of a data-bound nested artboard that we descend through to reach its
+// focusable descendants.
+static bool focusNodeTraversable(FocusNode* node)
+{
+    if (node == nullptr)
+    {
+        return false;
+    }
+    if (focusNodeEligibleForTraversal(node))
+    {
+        return true;
+    }
+    // The data-bound nested-artboard scope is the only runtime FocusNode with
+    // no Focusable: descend through such an unbacked node. Authored
+    // canFocus=false nodes keep their Focusable and stay non-traversable
+    if (node->focusable() != nullptr)
+    {
+        return false;
+    }
+    return hasEligibleTraversableChildInFocusTree(node);
+}
+
 std::vector<FocusNode*> FocusManager::getTraversableNodes(
     FocusNode* scope) const
 {
@@ -751,7 +891,7 @@ std::vector<FocusNode*> FocusManager::getTraversableNodes(
 
     for (const auto& child : *childList)
     {
-        if (focusNodeEligibleForTraversal(child.get()))
+        if (focusNodeTraversable(child.get()))
         {
             result.push_back(child.get());
         }
@@ -771,7 +911,7 @@ static bool hasEligibleTraversableChildInFocusTree(FocusNode* node)
 {
     for (const auto& ch : node->children())
     {
-        if (focusNodeEligibleForTraversal(ch.get()))
+        if (focusNodeTraversable(ch.get()))
         {
             return true;
         }

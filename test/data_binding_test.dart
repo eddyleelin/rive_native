@@ -1,11 +1,12 @@
 // ignore_for_file: deprecated_member_use
 
 import 'dart:async';
-import 'dart:io';
 import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rive_native/rive_native.dart' as rive;
+
+import 'src/utils.dart';
 
 /// Data binding images from:
 /// - https://picsum.photos/id/237/200/300
@@ -30,8 +31,7 @@ void main() {
 
   setUpAll(() {
     return Future(() async {
-      final file = File('test/assets/databinding.riv');
-      final bytes = await file.readAsBytes();
+      final bytes = loadFile('assets/databinding.riv');
       riveFile =
           await rive.File.decode(bytes, riveFactory: rive.Factory.flutter)
               as rive.File;
@@ -510,8 +510,7 @@ void main() {
   });
 
   test('databinding images test', () async {
-    final file = File('test/assets/databinding_images.riv');
-    final bytes = await file.readAsBytes();
+    final bytes = loadFile('assets/databinding_images.riv');
     final imageFile =
         await rive.File.decode(bytes, riveFactory: rive.Factory.flutter)
             as rive.File;
@@ -530,8 +529,7 @@ void main() {
   });
 
   test('databinding lists test', () async {
-    final file = File('test/assets/databinding_lists.riv');
-    final bytes = await file.readAsBytes();
+    final bytes = loadFile('assets/databinding_lists.riv');
     final riveFile =
         await rive.File.decode(bytes, riveFactory: rive.Factory.flutter)
             as rive.File;
@@ -658,8 +656,7 @@ void main() {
   });
 
   test('databinding artboard test', () async {
-    final file = File('test/assets/artboard_db_test.riv');
-    final bytes = await file.readAsBytes();
+    final bytes = loadFile('assets/artboard_db_test.riv');
     final riveFile =
         await rive.File.decode(bytes, riveFactory: rive.Factory.flutter)
             as rive.File;
@@ -1188,8 +1185,7 @@ void main() {
   });
 
   test('artboardToBind with ViewModelInstance', () async {
-    final file = File('test/assets/artboard_db_vmi_test.riv');
-    final bytes = await file.readAsBytes();
+    final bytes = loadFile('assets/artboard_db_vmi_test.riv');
     final riveFile =
         await rive.File.decode(bytes, riveFactory: rive.Factory.flutter);
     expect(riveFile, isNotNull,

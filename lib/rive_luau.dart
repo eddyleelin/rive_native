@@ -230,6 +230,9 @@ abstract class LuauState {
   /// Pushes a [RenderImage] onto the Lua stack as a ScriptedImage userdata.
   /// Returns 1 if successful, 0 if the image is null.
   int pushImage(RenderImage image);
+  /// Pushes [font] onto the Lua stack as a Font userdata. Returns 1 on
+  /// success, 0 when the font could not be pushed.
+  int pushFont(Font font);
 
   /// Creates a (non-GPU) Canvas and pushes it onto the Lua stack.
   /// Returns 1 on success, pushes nil and returns 1 on failure.
@@ -255,6 +258,12 @@ abstract class LuauState {
 
   void enableDrawCanvasPhase();
   void disableDrawCanvasPhase();
+
+  /// Advances (resets) script-created view model instances that are detached
+  /// from any bound view model tree. Call once at the end of each frame so
+  /// fired triggers are consumed/re-armed. Mirrors the runtime's
+  /// Artboard::advanceScriptedViewModels.
+  void advanceDetachedViewModels();
 
   /// Looks up a shader by name from the per-VM ScriptingContext (editor) or
   /// file assets (runtime) and pushes the ScriptedShader onto the stack.

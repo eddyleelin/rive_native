@@ -125,6 +125,12 @@ abstract class FocusManager {
   /// The child knows its own parent, so no parent parameter is needed.
   void removeChild(FocusNode child);
 
+  /// Detach a child node from the hierarchy WITHOUT clearing focus.
+  /// Use this when reordering an existing node (e.g. rebuilding the focus
+  /// hierarchy) so the primary focus and its blur/focus callbacks are
+  /// preserved. For genuine removal use [removeChild] instead.
+  void detachChild(FocusNode child);
+
   /// Move focus to the next focusable node.
   /// Returns true if focus was moved.
   bool focusNext();

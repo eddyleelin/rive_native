@@ -39,6 +39,10 @@ public:
 
     ~ViewModelInstance();
     void addValue(ViewModelInstanceValue* value);
+    // Removes the property value with the given property id, if present.
+    // Returns whether a value was removed. Used to prune editor-time override
+    // instances down to only their explicitly-overridden properties.
+    bool removeValue(uint32_t propertyId);
     ViewModelInstanceValue* propertyValue(const uint32_t id);
     ViewModelInstanceValue* propertyValue(const std::string& name);
     ViewModelInstanceValue* propertyValue(const SymbolType symbolType);
@@ -61,6 +65,7 @@ public:
     void advanced();
     void addParent(ViewModelInstance*);
     void removeParent(ViewModelInstance*);
+    bool hasParents() const { return !m_parents.empty(); }
     void addDependent(DataBindContainer*);
     void removeDependent(DataBindContainer*);
 #ifdef TESTING

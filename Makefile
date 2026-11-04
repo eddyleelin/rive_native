@@ -102,6 +102,17 @@ android:
 	@echo "Android build complete!"
 
 # =============================================================================
+# Tests
+# =============================================================================
+
+# Run the unit test suite in Chrome against the local debug wasm.
+# Builds the debug wasm first; pass ARGS to forward flutter test arguments
+# or skip the build: make test-web ARGS="no-build test/hit_test.dart"
+.PHONY: test-web
+test-web:
+	./scripts/test_web.sh $(ARGS)
+
+# =============================================================================
 # Clean Targets
 # =============================================================================
 
@@ -145,6 +156,29 @@ update_cpp_runtime:
 		>&2 echo "\033[1;31mERROR: Makefile does not exist, nothing to rename. Pub builds may fail.\033[0m"; \
 		exit 1; \
 	fi
+	@$(MAKE) --no-print-directory verify_cpp_runtime
+
+# The synced runtime is published to pub.dev, so it must never contain anything
+# that isn't already public. Everything under ../runtime that git tracks is
+# pushed to github.com/rive-app/rive-runtime; anything untracked (build output,
+# editor config, secrets) is not, and must be excluded in runtime_exclude.txt.
+.PHONY: verify_cpp_runtime
+verify_cpp_runtime:
+	@echo "Verifying synced runtime contains only public files..."
+	@tracked=$$(mktemp); synced=$$(mktemp); \
+	( cd ../runtime && git ls-files ) | LC_ALL=C sort >$$tracked; \
+	( cd runtime && find . ! -type d ) | sed -e 's|^\./||' \
+		-e 's|^renderer/src/shaders/Makefile\.rive$$|renderer/src/shaders/Makefile|' \
+		| LC_ALL=C sort >$$synced; \
+	extra=$$(comm -23 $$synced $$tracked); \
+	rm -f $$tracked $$synced; \
+	if [ -n "$$extra" ]; then \
+		>&2 echo "\033[1;31mERROR: synced runtime contains files that are not in the public rive-runtime repo:\033[0m"; \
+		>&2 echo "$$extra"; \
+		>&2 echo "\033[1;31mAdd them to runtime_exclude.txt before publishing.\033[0m"; \
+		exit 1; \
+	fi; \
+	echo "OK: every synced file is public"
 
 .PHONY: publish_pub
 publish_pub:
@@ -190,6 +224,7 @@ help:
 	@echo ""
 	@echo "Utility:"
 	@echo "  update_cpp_runtime   - Sync C++ runtime from ../runtime"
+	@echo "  verify_cpp_runtime   - Check the synced runtime contains only public files"
 	@echo "  publish_pub          - Prepare for pub.dev publish"
 	@echo "  help                 - Show this help message"
 	@echo ""

@@ -1,18 +1,21 @@
 #ifdef WITH_RIVE_SCRIPTING
 #include "rive/lua/rive_lua_libs.hpp"
 #include "rive/assets/script_asset.hpp"
+#include "rive/viewmodel/viewmodel_instance.hpp"
 #include "rive/async/work_pool.hpp"
 #ifdef RIVE_CANVAS
 #include "rive/renderer/render_context.hpp"
 #endif
 #include "lualib.h"
 #include <stdio.h>
-#include <unordered_map>
 #include <unordered_set>
 #include <string>
+#include <string_view>
 #include <queue>
 #include <vector>
 #include <algorithm>
+#include <array>
+#include <iterator>
 
 using namespace rive;
 
@@ -28,7 +31,15 @@ int luaopen_rive_contex(lua_State* L);
 int luaopen_rive_audio(lua_State* L);
 extern "C" int luaopen_rive_buffer_ext(lua_State* L);
 
-std::unordered_map<std::string, int16_t> atoms = {
+namespace
+{
+struct LuaAtomName
+{
+    std::string_view name;
+    int16_t atom;
+};
+
+constexpr LuaAtomName atoms[] = {
     {"length", (int16_t)LuaAtoms::length},
     {"lengthSquared", (int16_t)LuaAtoms::lengthSquared},
     {"normalized", (int16_t)LuaAtoms::normalized},
@@ -108,6 +119,7 @@ std::unordered_map<std::string, int16_t> atoms = {
     {"getEnum", (int16_t)LuaAtoms::getEnum},
     {"getIndex", (int16_t)LuaAtoms::getIndex},
     {"getImage", (int16_t)LuaAtoms::getImage},
+    {"getFont", (int16_t)LuaAtoms::getFont},
     {"values", (int16_t)LuaAtoms::values},
     {"addListener", (int16_t)LuaAtoms::addListener},
     {"removeListener", (int16_t)LuaAtoms::removeListener},
@@ -162,6 +174,7 @@ std::unordered_map<std::string, int16_t> atoms = {
     {"image", (int16_t)LuaAtoms::image},
     {"blob", (int16_t)LuaAtoms::blob},
     {"size", (int16_t)LuaAtoms::size},
+    {"name", (int16_t)LuaAtoms::name},
     {"duration", (int16_t)LuaAtoms::duration},
     {"setTime", (int16_t)LuaAtoms::setTime},
     {"setTimeFrames", (int16_t)LuaAtoms::setTimeFrames},
@@ -295,7 +308,79 @@ std::unordered_map<std::string, int16_t> atoms = {
     {"transformVec4", (int16_t)LuaAtoms::transformVec4},
     {"writeToBuffer", (int16_t)LuaAtoms::writeToBuffer},
     {"invertAffine", (int16_t)LuaAtoms::invertAffine},
+    // Vector
+    {"writeVec4", (int16_t)LuaAtoms::writeVec4},
 };
+
+constexpr size_t atomCount = std::size(atoms);
+// Power of two so the modulo is a mask, and roomy enough to keep probes short.
+constexpr size_t atomSlotCount = 1024;
+static_assert(atomCount < atomSlotCount,
+              "atomSlotCount must exceed the number of atoms");
+
+constexpr uint32_t hashAtomName(std::string_view name)
+{
+    uint32_t hash = 2166136261u;
+    for (char c : name)
+    {
+        hash = (hash ^ (uint8_t)c) * 16777619u;
+    }
+    return hash;
+}
+
+constexpr size_t longestAtomName()
+{
+    size_t longest = 0;
+    for (const LuaAtomName& entry : atoms)
+    {
+        if (entry.name.size() > longest)
+        {
+            longest = entry.name.size();
+        }
+    }
+    return longest;
+}
+constexpr size_t maxAtomNameLength = longestAtomName();
+
+// Slots hold an index into atoms biased by one so zero reads as empty.
+constexpr std::array<uint16_t, atomSlotCount> buildAtomSlots()
+{
+    std::array<uint16_t, atomSlotCount> slots{};
+    for (size_t i = 0; i < atomCount; i++)
+    {
+        size_t slot = hashAtomName(atoms[i].name) & (atomSlotCount - 1);
+        while (slots[slot] != 0 && atoms[slots[slot] - 1].name != atoms[i].name)
+        {
+            slot = (slot + 1) & (atomSlotCount - 1);
+        }
+        if (slots[slot] == 0)
+        {
+            slots[slot] = (uint16_t)(i + 1);
+        }
+    }
+    return slots;
+}
+constexpr std::array<uint16_t, atomSlotCount> atomSlots = buildAtomSlots();
+
+int16_t findAtom(const char* chars, size_t length)
+{
+    if (length > maxAtomNameLength)
+    {
+        return -1;
+    }
+    std::string_view name(chars, length);
+    size_t slot = hashAtomName(name) & (atomSlotCount - 1);
+    for (uint16_t index = atomSlots[slot]; index != 0;
+         index = atomSlots[slot = (slot + 1) & (atomSlotCount - 1)])
+    {
+        if (atoms[index - 1].name == name)
+        {
+            return atoms[index - 1].atom;
+        }
+    }
+    return -1;
+}
+} // namespace
 
 static const luaL_Reg lualibs[] = {
     {"", luaopen_base},
@@ -326,13 +411,7 @@ int luaopen_rive(lua_State* L)
 {
     lua_callbacks(L)->useratom =
         [](lua_State*, const char* s, size_t l) -> int16_t {
-        auto itr = atoms.find(s);
-        if (itr != atoms.end())
-        {
-            return itr->second;
-        }
-
-        return -1;
+        return findAtom(s, l);
     };
 
     const luaL_Reg* lib = lualibs;
@@ -445,20 +524,18 @@ static int lua_requireinternal(lua_State* L, const char* requirerChunkname)
     lua_settop(L, 1);
     const char* path = luaL_checkstring(L, 1);
 
+    ScriptingContext* context =
+        static_cast<ScriptingContext*>(lua_getthreaddata(L));
+
     if (checkRegisteredModules(L, path) == 1)
     {
         return 1;
     }
 
     // Record missing dependency if we're registering a module
-    if (requirerChunkname)
+    if (requirerChunkname != nullptr && context != nullptr)
     {
-        ScriptingContext* context =
-            static_cast<ScriptingContext*>(lua_getthreaddata(L));
-        if (context)
-        {
-            context->recordMissingDependency(requirerChunkname, path);
-        }
+        context->recordMissingDependency(requirerChunkname, path);
     }
 
     luaL_error(L, "require could not find a script named %s", path);
@@ -636,8 +713,13 @@ bool ScriptingVM::loadModule(lua_State* L,
 // loadModule). On success, replaces the thread with the module result.
 // If isUtility, also registers the result in the require cache.
 // Returns true on success.
-bool ScriptingVM::executeModule(lua_State* L, const char* name, bool isUtility)
+bool ScriptingVM::executeModule(lua_State* L,
+                                const char* name,
+                                bool isUtility,
+                                const char* chunkname)
 {
+    const char* display = chunkname != nullptr ? chunkname : name;
+
     // The module thread should be on top of the stack.
     lua_State* ML = lua_tothread(L, -1);
     if (ML == nullptr)
@@ -650,22 +732,24 @@ bool ScriptingVM::executeModule(lua_State* L, const char* name, bool isUtility)
     {
         if (lua_gettop(ML) == 0)
         {
-            lua_pushfstring(ML, "%s:1: module must return a value", name);
+            lua_pushfstring(ML, "%s:1: module must return a value", display);
         }
         else if (!lua_istable(ML, -1) && !lua_isfunction(ML, -1))
         {
             lua_pushfstring(ML,
                             "%s:1: module must return a table or function",
-                            name);
+                            display);
         }
     }
     else if (status == LUA_YIELD)
     {
-        lua_pushfstring(ML, "%s:1: module can not yield", name);
+        lua_pushfstring(ML, "%s:1: module can not yield", display);
     }
     else if (!lua_isstring(ML, -1))
     {
-        lua_pushfstring(ML, "%s:1: unknown error while running module", name);
+        lua_pushfstring(ML,
+                        "%s:1: unknown error while running module",
+                        display);
     }
 
     // add ML result to L stack
@@ -753,7 +837,7 @@ bool ScriptingContext::tryRegisterModule(lua_State* state,
         return false;
     }
 #endif
-    const std::string& name = moduleDetails->moduleName();
+    std::string name = moduleDetails->moduleName();
     bool registerSuccess = false;
     int functionRef = 0;
     if (moduleDetails->isProtocolScript())
@@ -801,10 +885,10 @@ void ScriptingContext::performRegistration(lua_State* state)
         {
             continue;
         }
-        std::string moduleName = moduleDetails->moduleName();
+        std::string cacheKey = moduleDetails->moduleName();
 
         // Skip if already registered
-        if (checkRegisteredModules(state, moduleName.c_str()) == 1)
+        if (checkRegisteredModules(state, cacheKey.c_str()) == 1)
         {
             lua_pop(state, 1);
             continue;
@@ -890,24 +974,27 @@ void ScriptingContext::recordMissingDependency(
     const std::string& requiringModule,
     const std::string& missingModule)
 {
-    if (!requiringModule.empty())
+    if (requiringModule.empty())
     {
-        ModuleDetails* moduleDetails = m_moduleLookup[requiringModule];
-        if (moduleDetails != nullptr)
-        {
-            moduleDetails->addMissingDependency(missingModule);
-            m_pendingModules.insert(moduleDetails);
-        }
+        return;
     }
+    auto it = m_moduleLookup.find(requiringModule);
+    if (it == m_moduleLookup.end())
+    {
+        return;
+    }
+    it->second->addMissingDependency(missingModule);
+    m_pendingModules.insert(it->second);
 }
 
 void ScriptingContext::onModuleRegistered(ModuleDetails* moduleDetails)
 {
+    std::string key = moduleDetails->moduleName();
     for (ModuleDetails* module : m_modulesToRegister)
     {
         if (!module->missingDependencies().empty())
         {
-            moduleDetails->clearMissingDependency(moduleDetails->moduleName());
+            module->clearMissingDependency(key);
         }
     }
     auto it = m_pendingModules.find(moduleDetails);
@@ -915,6 +1002,132 @@ void ScriptingContext::onModuleRegistered(ModuleDetails* moduleDetails)
     {
         m_pendingModules.erase(it);
     }
+}
+
+ScriptingContext::ScopedAssetReference::ScopedAssetReference(
+    lua_State* L,
+    const char* reference)
+{
+    std::string request(reference);
+    static const std::string kLibraryPrefix = "lib:";
+    if (request.compare(0, kLibraryPrefix.size(), kLibraryPrefix) == 0)
+    {
+        size_t slash = request.find('/', kLibraryPrefix.size());
+        if (slash != std::string::npos)
+        {
+            m_label = request.substr(kLibraryPrefix.size(),
+                                     slash - kLibraryPrefix.size());
+            m_path = request.substr(slash + 1);
+            return;
+        }
+    }
+    m_bare = std::move(request);
+    if (L == nullptr)
+    {
+        return;
+    }
+    // Mangled chunknames self-describe; the calling chunk's first segment
+    // carries its scope. Skip C frames like lua_require does.
+    lua_Debug ar;
+    int level = 1;
+    do
+    {
+        if (!lua_getinfo(L, level++, "s", &ar))
+        {
+            return;
+        }
+    } while (ar.what[0] == 'C');
+    if (ar.source == nullptr)
+    {
+        return;
+    }
+    std::string chunkname(ar.source);
+    size_t slash = chunkname.find('/');
+    if (slash == std::string::npos)
+    {
+        return;
+    }
+    size_t at = chunkname.find('@');
+    if (at > 0 && at < slash)
+    {
+        m_scopePrefix = chunkname.substr(0, slash);
+    }
+}
+
+bool ScriptingContext::ScopedAssetReference::matchesLibrary(
+    const std::string& registeredName) const
+{
+    // <label>[#<digits>]@<digits>/<path>
+    if (registeredName.size() <= m_label.size() ||
+        registeredName.compare(0, m_label.size(), m_label) != 0)
+    {
+        return false;
+    }
+    size_t i = m_label.size();
+    if (registeredName[i] == '#')
+    {
+        size_t start = ++i;
+        while (i < registeredName.size() && registeredName[i] >= '0' &&
+               registeredName[i] <= '9')
+        {
+            i++;
+        }
+        if (i == start)
+        {
+            return false;
+        }
+    }
+    if (i >= registeredName.size() || registeredName[i] != '@')
+    {
+        return false;
+    }
+    size_t start = ++i;
+    while (i < registeredName.size() && registeredName[i] >= '0' &&
+           registeredName[i] <= '9')
+    {
+        i++;
+    }
+    if (i == start || i >= registeredName.size() || registeredName[i] != '/')
+    {
+        return false;
+    }
+    return registeredName.compare(i + 1, std::string::npos, m_path) == 0;
+}
+
+int ScriptingContext::ScopedAssetReference::match(
+    const std::string& registeredName,
+    const std::string& shortName) const
+{
+    if (!m_label.empty())
+    {
+        return matchesLibrary(registeredName) ? 1 : 0;
+    }
+    if (!m_scopePrefix.empty() &&
+        registeredName.size() > m_scopePrefix.size() &&
+        registeredName[m_scopePrefix.size()] == '/' &&
+        registeredName.compare(0, m_scopePrefix.size(), m_scopePrefix) == 0)
+    {
+        // Inside the caller's library both the scope relative path and the
+        // short name address it.
+        if (registeredName.compare(m_scopePrefix.size() + 1,
+                                   std::string::npos,
+                                   m_bare) == 0 ||
+            shortName == m_bare)
+        {
+            return 2;
+        }
+        return 0;
+    }
+    // Host assets only; other libraries need lib: or their own scope.
+    size_t slash = registeredName.find('/');
+    size_t firstSegment =
+        slash == std::string::npos ? registeredName.size() : slash;
+    size_t at = registeredName.find('@');
+    if (at > 0 && at < firstSegment)
+    {
+        return 0;
+    }
+    return registeredName == m_bare || shortName == m_bare ? 1 : 0;
 }
 
 #ifdef WITH_RIVE_TOOLS
@@ -929,6 +1142,27 @@ const std::vector<uint8_t>* ScriptingContext::findShaderRstb(
 {
     auto it = m_shaderRstbs.find(name);
     return it != m_shaderRstbs.end() ? &it->second : nullptr;
+}
+
+const std::vector<uint8_t>* ScriptingContext::findShaderRstb(
+    const ScopedAssetReference& reference) const
+{
+    const std::vector<uint8_t>* found = nullptr;
+    int bestRank = 0;
+    for (const auto& entry : m_shaderRstbs)
+    {
+        size_t slash = entry.first.rfind('/');
+        std::string shortName = slash == std::string::npos
+                                    ? entry.first
+                                    : entry.first.substr(slash + 1);
+        int rank = reference.match(entry.first, shortName);
+        if (rank > bestRank)
+        {
+            bestRank = rank;
+            found = &entry.second;
+        }
+    }
+    return found;
 }
 
 void ScriptingContext::setGeneratorRef(uint32_t assetId, int ref)
@@ -979,6 +1213,45 @@ void ScriptingContext::disposeOrphanScriptedProperties()
 }
 #endif
 
+void ScriptingContext::trackViewModelInstance(rcp<ViewModelInstance> instance)
+{
+    if (instance == nullptr)
+    {
+        return;
+    }
+    auto& tracked = m_trackedViewModelInstances[instance.get()];
+    tracked.instance = instance;
+    tracked.registrations++;
+}
+
+void ScriptingContext::untrackViewModelInstance(ViewModelInstance* instance)
+{
+    if (instance == nullptr)
+    {
+        return;
+    }
+    auto it = m_trackedViewModelInstances.find(instance);
+    if (it != m_trackedViewModelInstances.end() &&
+        --it->second.registrations <= 0)
+    {
+        m_trackedViewModelInstances.erase(it);
+    }
+}
+
+void ScriptingContext::advanceDetachedViewModels()
+{
+    for (auto& entry : m_trackedViewModelInstances)
+    {
+        ViewModelInstance* instance = entry.second.instance.get();
+        // Only advance detached roots. Instances with parents are already
+        // reached through the bound tree or their detached-root ancestor.
+        if (!instance->hasParents())
+        {
+            instance->advanced();
+        }
+    }
+}
+
 // ── WorkPool integration ───────────────────────────────────────────────────
 // getGlobalWorkPool() is defined in work_pool.cpp (shared singleton).
 
@@ -1017,7 +1290,8 @@ void ScriptingContext::shutdownAsyncForState(lua_State* mainThread)
 
 bool ScriptingVM::registerScript(lua_State* state,
                                  const char* name,
-                                 Span<uint8_t> bytecode)
+                                 Span<uint8_t> bytecode,
+                                 const char* chunkname)
 {
     // Check if already registered - leave module on stack for caller to use
     if (checkRegisteredModules(state, name) == 1)
@@ -1025,12 +1299,12 @@ bool ScriptingVM::registerScript(lua_State* state,
         return true;
     }
 
-    if (!loadModule(state, name, bytecode))
+    if (!loadModule(state, chunkname != nullptr ? chunkname : name, bytecode))
     {
         return false;
     }
 
-    if (!executeModule(state, name, false))
+    if (!executeModule(state, name, false, chunkname))
     {
         return false;
     }
@@ -1040,7 +1314,8 @@ bool ScriptingVM::registerScript(lua_State* state,
 
 bool ScriptingVM::registerModule(lua_State* state,
                                  const char* name,
-                                 Span<uint8_t> bytecode)
+                                 Span<uint8_t> bytecode,
+                                 const char* chunkname)
 {
     // Check if already registered
     if (checkRegisteredModules(state, name) == 1)
@@ -1049,12 +1324,12 @@ bool ScriptingVM::registerModule(lua_State* state,
         return true;
     }
 
-    if (!loadModule(state, name, bytecode))
+    if (!loadModule(state, chunkname != nullptr ? chunkname : name, bytecode))
     {
         return false;
     }
 
-    if (!executeModule(state, name, true))
+    if (!executeModule(state, name, true, chunkname))
     {
         return false;
     }

@@ -1027,20 +1027,33 @@ public:
     {
         if (m_pointCount == 0)
         {
-            m_pointA = point;
+            // Also seed pointB so degenerate paths (single point, all
+            // duplicates) never report an uninitialized segment.
+            m_pointA = m_pointB = point;
             m_pointCount++;
         }
         else if (m_pointCount == 1)
         {
+            auto diff = point - m_pointA;
+            if (diff.x == 0.0f && diff.y == 0.0f)
+            {
+                // Skip duplicates of the first point until a distinct point
+                // establishes the line's direction.
+                return true;
+            }
             m_pointB = point;
-            auto diff = m_pointB - m_pointA;
-            m_slope = diff.y / diff.x;
+            m_direction = diff.normalized();
+            m_pointCount++;
         }
         else
         {
+            // Sign-free collinearity: |cross| / |AP| is |sin| of the angle
+            // between the A->B line and A->P. A signed slope comparison
+            // breaks on vertical lines with points on both sides of A
+            // (-inf vs +inf).
             auto diff = point - m_pointA;
-            auto slope = diff.y / diff.x;
-            if (std::abs(m_slope - slope) >= 0.1f)
+            if (std::abs(rive::Vec2D::cross(m_direction, diff)) >
+                0.1f * diff.length())
             {
                 return false;
             }
@@ -1053,7 +1066,7 @@ private:
     int m_pointCount = 0;
     rive::Vec2D m_pointA;
     rive::Vec2D m_pointB;
-    float m_slope = 0.0f;
+    rive::Vec2D m_direction;
 };
 
 EXPORT bool renderPathColinearCheck(rive::Factory* factory,

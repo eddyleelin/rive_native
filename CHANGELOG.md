@@ -1,7 +1,36 @@
-## 0.1.9
+## 0.1.11
+
+- Updates the Rive C++ runtime and renderer for the latest features, bug fixes, and performance improvements.
+- Adds `RenderResolution` to control how a `Factory.rive` texture sizes its backing store: `display()` (default — layout × device pixel ratio × ancestor paint scale), `layout({scale})` (layout × device pixel ratio, ignores ancestor transforms), and `fixed(width, height)` (explicit physical pixels). Available on `RenderTexture.widget`, `RiveArtboardWidget`, and `RiveProceduralRenderingWidget`.
+- **Web behavior change**: `RenderResolution.display()` now accounts for ancestor transforms on web, matching native — an upscaled widget renders sharp instead of stretched. Pass `RenderResolution.layout()` for the previous behavior.
+- Adds `RiveNative.instance.releaseRenderResources()` to release cached render resources (web: pooled textures and the probe context), recreated on demand. No-op on other platforms.
+- Adds `RiveNative.debugRenderTextureLogging` (web): logs render-texture create/reuse/release with live WebGL context counts.
 
 ### Fixes
 
+- Windows: fixed a crash or hang when disposing a render texture with a frame in flight, such as closing the app under load or the desktop going to sleep. The fence wait thread could outlive teardown and either touch a destroyed texture registrar or block shutdown indefinitely (see core runtime issue [#86](https://github.com/rive-app/rive-runtime/issues/86)).
+- Texture allocations under `display` and `layout` are capped at 4096 logical pixels per axis (aspect preserved), preventing runaway allocations under large ancestor scales.
+- Web: canvas backing stores are clamped to the GPU's maximum render-target size.
+- Web: render textures release their WebGL contexts on dispose (bounded reuse pool), browser-evicted contexts are purged instead of reused, and the MSAA probe context is released at startup — fixes context-limit exhaustion and permanently blank widgets.
+
+## 0.1.10
+
+- Updates the Rive C++ runtime and renderer for the latest features, bug fixes, and performance improvements.
+
+### Fixes
+
+- Rive Renderer (`Factory.rive`) rendering issues on Linux with later versions of Flutter (3.38+, see Flutter issue [182998](https://github.com/flutter/flutter/issues/182998))
+- Various Rive scripting fixes and updates, notably:
+  - Updated Luau to 0.728
+  - Fixed the Lua `Data` global not being initialized, which left view model constructors such as `Data.MyViewModel.new()` unavailable to scripts
+
+## 0.1.9
+
+- Updates the Rive C++ runtime and renderer for the latest features, bug fixes, and performance improvements.
+
+### Fixes
+
+- Fixed a "RenderBox was not laid out" crash in `RiveNativeRenderBox.paint` (`Factory.rive`) that could occur when painting during certain transitions. See https://github.com/rive-app/rive-flutter/issues/642.
 - Touch and stylus pointer up (and cancel) now also dispatch a pointer exit, so listeners receive a Pointer Exit when a finger or pen lifts. This keeps enter/exit symmetric on mobile and matches other Rive runtimes. Mouse and trackpad pointers are unaffected, their exit still comes from the pointer leaving the artboard/widget.
 - Fixed a crash when using `desktop_multi_window` on Windows with MicroProfile GPU init
 

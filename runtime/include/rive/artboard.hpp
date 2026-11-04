@@ -25,6 +25,7 @@
 #include "rive/lua/scripting_vm.hpp"
 
 #include <queue>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -93,7 +94,7 @@ private:
     std::vector<AdvancingComponent*> m_advancingComponents;
     rcp<DataContext> m_DataContext = nullptr;
 #ifdef WITH_RIVE_SCRIPTING
-    ScriptingVM* m_scriptingVM = nullptr;
+    rcp<ScriptingVM> m_scriptingVM = nullptr;
 #endif
     bool m_JoysticksApplyBeforeUpdate = true;
 
@@ -378,8 +379,15 @@ public:
     }
     rcp<DataContext> dataContext() { return m_DataContext; }
 #ifdef WITH_RIVE_SCRIPTING
-    void scriptingVM(ScriptingVM* value) { m_scriptingVM = value; }
+    void scriptingVM(rcp<ScriptingVM> value)
+    {
+        m_scriptingVM = std::move(value);
+    }
 #endif
+    // Advances detached scripted view model instances (those with no parents),
+    // which are not reachable from the bound view model tree. No-op when
+    // scripting is disabled. Called at the end of each frame.
+    void advanceScriptedViewModels();
     NestedArtboard* nestedArtboard(const std::string& name) const;
     NestedArtboard* nestedArtboardAtPath(const std::string& path) const;
 
@@ -394,6 +402,8 @@ public:
     Vec2D origin() const;
     void xChanged() override;
     void yChanged() override;
+    void originXChanged() override;
+    void originYChanged() override;
 
     void resetSize()
     {
@@ -414,6 +424,25 @@ public:
     void bindViewModelInstance(rcp<ViewModelInstance> viewModelInstance,
                                rcp<DataContext> parent);
     void bindViewModelInstance(rcp<ViewModelInstance> viewModelInstance);
+    void bindViewModelInstances(
+        std::vector<rcp<ViewModelInstance>> viewModelInstances,
+        rcp<DataContext> parent);
+    // Sets the main (non-global) view model instance in the data context
+    // without rebinding. Call bind() to apply. A global instance is routed to
+    // setGlobalViewModelInstance.
+    void setViewModelInstance(rcp<ViewModelInstance> viewModelInstance);
+    // Sets/replaces the global view model instance bound under the given global
+    // view model name without rebinding, preserving the main instance and the
+    // other globals' order. Returns false if the name does not match the
+    // instance's global view model. Call bind() to apply.
+    bool setGlobalViewModelInstance(const std::string& name,
+                                    rcp<ViewModelInstance> viewModelInstance);
+    // Applies the current data context: rebinds the artboard's data binds.
+    // No-op if nothing has been set.
+    void bind();
+    // @returns the global view model instance currently bound under the given
+    // name, or nullptr if none has been set. Never creates.
+    rcp<ViewModelInstance> globalViewModelInstance(const std::string& name);
     void rebuildDataBind(DataBind*) override;
 
     bool hasAudio() const;
@@ -609,6 +638,34 @@ public:
     float volume() const;
     void volume(float value);
 
+    // Opacity imposed by a host (e.g. a NestedArtboard) that renders this
+    // artboard as an instance. Kept separate from the `opacity` property so the
+    // artboard's own opacity remains free to animate / data-bind; the two are
+    // multiplied together when propagating opacity to this artboard's contents.
+    float hostOpacity() const { return m_hostOpacity; }
+    void hostOpacity(float value);
+
+    // Opacity propagated to this artboard's contents: the artboard's own
+    // (possibly animated) opacity folded with any host-imposed opacity.
+    float childOpacity() override { return renderOpacity() * m_hostOpacity; }
+
+    // True when the artboard has a non-identity rotation/scale of its own.
+    bool hasSelfTransform() const
+    {
+        return rotation() != 0.0f || scaleX() != 1.0f || scaleY() != 1.0f;
+    }
+
+    // The artboard's own rotation/scale, pivoted at the content-local origin
+    // (0,0). Applied on top of the frame-origin translation by both draw and
+    // hit-test so they stay consistent. Identity when hasSelfTransform() is
+    // false.
+    Mat2D selfTransform() const
+    {
+        Mat2D m = Mat2D::fromRotation(rotation());
+        m.scaleByValues(scaleX(), scaleY());
+        return m;
+    }
+
 #ifdef EXTERNAL_RIVE_AUDIO_ENGINE
     rcp<AudioEngine> audioEngine() const;
     void audioEngine(rcp<AudioEngine> audioEngine);
@@ -619,6 +676,7 @@ public:
 #endif
 private:
     float m_volume = 1.0f;
+    float m_hostOpacity = 1.0f;
 #ifdef WITH_RIVE_TOOLS
     ArtboardCallback m_layoutChangedCallback = nullptr;
     ArtboardCallback m_layoutDirtyCallback = nullptr;
@@ -656,6 +714,12 @@ public:
         m_rootTransformCallback = callback;
     }
 #endif
+
+protected:
+    // The File backing this artboard, when it is an instance. Used to lazily
+    // create default global view model instances. The base Artboard (e.g. an
+    // editor-time artboard) has no backing file.
+    virtual rcp<const File> artboardFile() const;
 };
 
 class ArtboardInstance : public Artboard
@@ -667,6 +731,9 @@ public:
     /// Holds a reference to the File that vended this instance so the File
     /// outlives the instance.
     void file(rcp<const File> file);
+    /// @returns the File that vended this instance, if any. Used to lazily
+    /// create default global view model instances on demand.
+    rcp<const File> file() const;
 
     std::unique_ptr<LinearAnimationInstance> animationAt(size_t index);
     std::unique_ptr<LinearAnimationInstance> animationNamed(
@@ -695,6 +762,9 @@ public:
     SMINumber* getNumber(const std::string& name, const std::string& path);
     SMITrigger* getTrigger(const std::string& name, const std::string& path);
     TextValueRun* getTextRun(const std::string& name, const std::string& path);
+
+protected:
+    rcp<const File> artboardFile() const override;
 
 private:
     rcp<const File> m_file;

@@ -26,6 +26,7 @@ class Factory;
 class Renderer;
 class TextModifierGroup;
 class TextStylePaint;
+class LayoutParticipant;
 
 // A draw command for interleaving monochrome style paths and color glyphs.
 struct TextDrawCommand
@@ -181,6 +182,13 @@ public:
 
     void update(ComponentDirt value) override;
     void onDirty(ComponentDirt value) override;
+
+    // Participates in a parent layout via an optional
+    // LayoutParticipant child (origin-based; text sizes via its own layout).
+    void composeWorldTransform() override;
+    LayoutParticipant* layoutParticipant() const;
+    bool isParticipatingInLayout() const;
+
     Mat2D m_transform;
     Mat2D m_shapeWorldTransform;
 
@@ -227,6 +235,12 @@ public:
     float effectiveHeight()
     {
         return std::isnan(m_layoutHeight) ? height() : m_layoutHeight;
+    }
+    // Overflow treats the box as fixed once a layout controls our size.
+    bool overflowAsFixed() const
+    {
+        return effectiveSizing() == TextSizing::fixed ||
+               !std::isnan(m_layoutWidth);
     }
     float computedWidth() override { return localBounds().width(); };
     float computedHeight() override { return localBounds().height(); };

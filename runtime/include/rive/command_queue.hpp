@@ -8,10 +8,13 @@
 #include "rive/refcnt.hpp"
 #include "rive/math/vec2d.hpp"
 #include "rive/viewmodel/runtime/viewmodel_runtime.hpp"
+#include "rive/animation/semantic_listener_group.hpp"
+#include "rive/semantic/semantic_snapshot.hpp"
 
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -39,6 +42,7 @@ class File;
 class ArtboardInstance;
 class StateMachineInstance;
 class CommandServer;
+class ScriptingContext;
 
 RIVE_DEFINE_HANDLE(FontHandle);
 RIVE_DEFINE_HANDLE(FileHandle);
@@ -52,6 +56,15 @@ RIVE_DEFINE_HANDLE(DrawKey);
 // Function poimter that gets called back from the server thread.
 using CommandServerCallback = std::function<void(CommandServer*)>;
 using CommandServerDrawCallback = std::function<void(DrawKey, CommandServer*)>;
+
+// Creates the ScriptingContext used for a loaded file's Lua VM. Invoked on the
+// command server thread with the server's Factory so the context is built with
+// the correct factory on the correct thread. Return nullptr (or leave the
+// factory empty) to fall back to the default CPPRuntimeScriptingContext. Used
+// by hosts (e.g. Unreal) to redirect Lua console/error output to their own
+// logging.
+using ScriptingContextFactory =
+    std::function<std::unique_ptr<ScriptingContext>(Factory*)>;
 
 struct ViewModelEnum
 {
@@ -130,6 +143,12 @@ public:
         virtual void onViewModelsListed(const FileHandle,
                                         uint64_t requestId,
                                         std::vector<std::string> viewModelNames)
+        {}
+
+        virtual void onGlobalViewModelNamesListed(
+            const FileHandle,
+            uint64_t requestId,
+            std::vector<std::string> globalViewModelNames)
         {}
 
         virtual void onViewModelInstanceNamesListed(
@@ -254,6 +273,17 @@ public:
             uint64_t requestId,
             std::vector<std::string> stateMachineNames)
         {}
+
+        virtual void onArtboardVolumeReceived(const ArtboardHandle,
+                                              uint64_t requestId,
+                                              float volume)
+        {}
+
+        virtual void onArtboardSizeReceived(const ArtboardHandle,
+                                            uint64_t requestId,
+                                            float width,
+                                            float height)
+        {}
     };
 
     struct ViewModelInstanceData
@@ -280,14 +310,20 @@ public:
                                             ViewModelInstanceHandle>
     {
     public:
+        virtual void onViewModelInstanceError(const ViewModelInstanceHandle,
+                                              uint64_t requestId,
+                                              std::string error)
+        {}
+
         virtual void onViewModelInstanceViewModelNameReceived(
             const ViewModelInstanceHandle,
             uint64_t requestId,
             std::string viewModelName)
         {}
-        virtual void onViewModelInstanceError(const ViewModelInstanceHandle,
-                                              uint64_t requestId,
-                                              std::string error)
+        virtual void onViewModelInstanceNameReceived(
+            const ViewModelInstanceHandle handle,
+            uint64_t requestId,
+            std::string instanceName)
         {}
 
         virtual void onViewModelDeleted(const ViewModelInstanceHandle,
@@ -329,14 +365,30 @@ public:
         virtual void onStateMachineSettled(const StateMachineHandle,
                                            uint64_t requestId)
         {}
+
+        // Delivered when an incremental semantic diff is available for this
+        // state machine. Emitted only when drainSemanticsDiff produces a
+        // non-empty diff. Bounds inside the diff are reported in view space
+        // using the fit/alignment/scale/view-bounds arguments provided to the
+        // drain command.
+        virtual void onSemanticsDiffReceived(const StateMachineHandle,
+                                             uint64_t requestId,
+                                             SemanticsDiff diff)
+        {}
     };
 
     CommandQueue();
     ~CommandQueue();
 
-    FileHandle loadFile(std::vector<uint8_t> rivBytes,
-                        FileListener* listener = nullptr,
-                        uint64_t requestId = 0);
+    FileHandle loadFile(
+        std::vector<uint8_t> rivBytes,
+        FileListener* listener = nullptr,
+        uint64_t requestId = 0
+#ifdef WITH_RIVE_SCRIPTING
+        ,
+        ScriptingContextFactory scriptingContextFactory = nullptr
+#endif
+    );
 
     void deleteFile(FileHandle, uint64_t requestId = 0);
 
@@ -554,9 +606,52 @@ public:
                                ViewModelInstanceHandle,
                                uint64_t requestId = 0);
 
+    // Sets the main (non-global) view model instance without rebinding. Call
+    // bind() to apply.
+    void setViewModelInstance(StateMachineHandle,
+                              ViewModelInstanceHandle,
+                              uint64_t requestId = 0);
+
+    // Sets/replaces the global view model instance bound under the given global
+    // view model name without rebinding. Call bind() to apply. Reports a state
+    // machine error if the name does not match a global view model.
+    void setGlobalViewModelInstance(StateMachineHandle,
+                                    std::string name,
+                                    ViewModelInstanceHandle,
+                                    uint64_t requestId = 0);
+
+    // Returns a handle to the global view model instance currently bound under
+    // the given name. Never creates: if none is bound, reports a view model
+    // error and the returned handle maps to nothing.
+    ViewModelInstanceHandle globalViewModelInstance(
+        StateMachineHandle,
+        std::string name,
+        ViewModelInstanceListener* listener = nullptr,
+        uint64_t requestId = 0);
+
+    // Applies the current data context: rebinds artboard + state machine data
+    // binds in a single pass. No-op if nothing has been set.
+    void bind(StateMachineHandle, uint64_t requestId = 0);
+
     void advanceStateMachine(StateMachineHandle,
                              float timeToAdvance,
                              uint64_t requestId = 0);
+
+    // Enable the semantic subsystem on the given state machine. Must be
+    // called before diffs are delivered. Safe to call multiple times.
+    void enableSemantics(StateMachineHandle, uint64_t requestId = 0);
+
+    // Drain the current semantic diff for the given state machine.
+    // The response is delivered via
+    // StateMachineListener::onSemanticsDiffReceived when the diff is non-empty.
+    // Output bounds are mapped to view space using the provided fit/alignment/
+    // scale/view-bounds parameters.
+    void drainSemanticsDiff(StateMachineHandle,
+                            Fit fit,
+                            Alignment alignment,
+                            float scaleFactor,
+                            Vec2D viewBounds,
+                            uint64_t requestId = 0);
 
     // Pointer events
     struct PointerEvent
@@ -578,6 +673,25 @@ public:
     void pointerExit(StateMachineHandle, PointerEvent, uint64_t requestId = 0);
 
     void deleteStateMachine(StateMachineHandle, uint64_t requestId = 0);
+
+    // Fire a semantic action (tap / increase / decrease) on the given node.
+    // Fire-and-forget; reports a stateMachineError if the handle is unknown or
+    // semantics isn't enabled. An unknown node id is a silent no-op.
+    void fireSemanticAction(StateMachineHandle,
+                            uint32_t semanticNodeId,
+                            SemanticActionType actionType,
+                            uint64_t requestId = 0);
+
+    // Request focus on the given semantic node. Fire-and-forget; reports a
+    // stateMachineError if the handle is unknown or semantics isn't enabled.
+    // An unknown or non-focusable node id is a silent no-op.
+    void requestSemanticFocus(StateMachineHandle,
+                              uint32_t semanticNodeId,
+                              uint64_t requestId = 0);
+
+    // Clear all semantic focus. Called when the screen reader moves
+    // focus entirely away from the hosting view.
+    void clearSemanticFocus(StateMachineHandle, uint64_t requestId = 0);
 
     RenderImageHandle decodeImage(std::vector<uint8_t> imageEncodedBytes,
                                   RenderImageListener* listener = nullptr,
@@ -613,8 +727,16 @@ public:
     // Create unique draw key for draw.
     DrawKey createDrawKey();
 
-    // Executes a one-time callback on the server. This may eventualy become a
-    // testing-only method.
+    /**
+     * Executes a one-time callback directly on the command server.
+     *
+     * This is an escape hatch for tests and runtime-specific operations that
+     * cannot be represented by the shared command and message protocol. Do not
+     * use it to implement capabilities common to multiple runtimes; add a
+     * canonical command, message, and listener callback instead.
+     *
+     * @param callback The callback to execute on the command server.
+     */
     void runOnce(CommandServerCallback);
 
     // Run draw function for given draw key, only the latest function passed
@@ -640,10 +762,9 @@ public:
     void disconnect();
 
     void requestViewModelNames(FileHandle, uint64_t requestId = 0);
+    void requestGlobalViewModelNames(FileHandle, uint64_t requestId = 0);
     void requestArtboardNames(FileHandle, uint64_t requestId = 0);
     void requestFileAssets(FileHandle, uint64_t requestId = 0);
-    void requestViewModelInstanceViewModelName(ViewModelInstanceHandle,
-                                               uint64_t requestId = 0);
     void requestViewModelEnums(FileHandle, uint64_t requestId = 0);
     void requestViewModelPropertyDefinitions(FileHandle,
                                              std::string viewModelName,
@@ -652,6 +773,12 @@ public:
     void requestViewModelInstanceNames(FileHandle,
                                        std::string viewModelName,
                                        uint64_t requestId = 0);
+
+    void requestViewModelInstanceViewModelName(ViewModelInstanceHandle,
+                                               uint64_t requestId = 0);
+
+    void requestViewModelInstanceName(ViewModelInstanceHandle handle,
+                                      uint64_t requestId = 0);
 
     void requestViewModelInstanceBool(ViewModelInstanceHandle,
                                       std::string path,
@@ -681,6 +808,12 @@ public:
                                            std::string path,
                                            uint64_t requestId = 0);
 
+    void setArtboardVolume(ArtboardHandle,
+                           float volume,
+                           uint64_t requestId = 0);
+    void requestArtboardVolume(ArtboardHandle, uint64_t requestId = 0);
+
+    void requestArtboardSize(ArtboardHandle, uint64_t requestId = 0);
     void requestStateMachineNames(ArtboardHandle, uint64_t requestId = 0);
     void requestDefaultViewModelInfo(ArtboardHandle,
                                      FileHandle,
@@ -855,7 +988,16 @@ private:
         instantiateStateMachine,
         deleteStateMachine,
         advanceStateMachine,
+        enableSemantics,
+        drainSemanticsDiff,
+        fireSemanticAction,
+        requestSemanticFocus,
+        clearSemanticFocus,
         bindViewModelInstance,
+        setViewModelInstance,
+        setGlobalViewModelInstance,
+        getGlobalViewModelInstance,
+        bind,
         runOnce,
         draw,
         cancelDraw,
@@ -874,13 +1016,18 @@ private:
         listStateMachines,
         getDefaultViewModel,
         listViewModels,
+        listGlobalViewModelNames,
         listViewModelInstanceNames,
         listViewModelProperties,
         listViewModelPropertyValue,
         getViewModelInstanceViewModelName,
+        getViewModelInstanceName,
         getViewModelListSize,
         clearViewModelList,
         listFileAssets,
+        setArtboardVolume,
+        getArtboardVolume,
+        getArtboardSize
     };
 
     enum class Message
@@ -892,7 +1039,9 @@ private:
         stateMachinesListed,
         defaultViewModelReceived,
         viewModelInstanceViewModelNameReceived,
+        viewModelInstanceNameReceived,
         viewModelsListend,
+        globalViewModelNamesListed,
         viewModelInstanceNamesListed,
         viewModelPropertiesListed,
         viewModelPropertyValueReceived,
@@ -913,14 +1062,17 @@ private:
         viewModelDeleted,
         stateMachineDeleted,
         stateMachineSettled,
+        semanticsDiffReceived,
         fileAssetsListed,
+        artboardSizeReceived,
         fileError,
         artboardError,
         viewModelError,
         imageError,
         audioError,
         fontError,
-        stateMachineError
+        stateMachineError,
+        artboardVolumeReceived
     };
 
     friend class CommandServer;
@@ -942,6 +1094,9 @@ private:
     ObjectStream<rcp<AudioSource>> m_externalAudioSources;
     ObjectStream<rcp<Font>> m_externalFonts;
     ObjectStream<std::vector<uint8_t>> m_byteVectors;
+#ifdef WITH_RIVE_SCRIPTING
+    ObjectStream<ScriptingContextFactory> m_scriptingContextFactories;
+#endif
     ObjectStream<PointerEvent> m_pointerEvents;
     ObjectStream<std::string> m_names;
     ObjectStream<CommandServerCallback> m_callbacks;
@@ -951,6 +1106,7 @@ private:
     std::mutex m_messageMutex;
     PODStream m_messageStream;
     ObjectStream<std::string> m_messageNames;
+    ObjectStream<SemanticsDiff> m_messageSemanticsDiffs;
 
     // Listeners
     FileListener* m_globalFileListener = nullptr;

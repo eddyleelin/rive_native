@@ -328,11 +328,13 @@ public:
 
     ~WebGL2Renderer()
     {
+        // Destroy GL-owning members here, while our context is current: the
+        // guard's scope ends before implicit member destruction would run.
         ScopedGLContextMakeCurrent makeCurrent(m_contextGL);
         m_oreContext.reset();
         m_plsSynchronizedBuffers.clear();
-        m_renderTarget.release();
-        m_renderContext.release();
+        m_renderTarget.reset();
+        m_renderContext.reset();
     }
 
     EMSCRIPTEN_WEBGL_CONTEXT_HANDLE contextGL() const { return m_contextGL; }

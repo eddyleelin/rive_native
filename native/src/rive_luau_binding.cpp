@@ -68,6 +68,11 @@ public:
         m_consoleHasDataCallback(consoleHasDataCallback)
     {}
 
+    // The editor builds the Lua `Data` global itself in Dart
+    // (ScriptingWorkspaceManager._setupDataGlobal), so File must not also
+    // call initializeLuaData on this VM.
+    bool initializesDataGlobalExternally() const override { return true; }
+
     int pCall(lua_State* state, int nargs, int nresults) override
     {
         // calculate stack position for message handler
@@ -677,12 +682,27 @@ EXPORT void riveLuaPushArtboard(lua_State* state,
     {
         return;
     }
+    // Carry the wrapped artboard's bound view model to the new instance,
+    // otherwise a host-bound default instance is silently replaced by a
+    // blank auto-created one.
+    rcp<ViewModelInstance> viewModelInstance;
+    if (auto boundContext = wrappedArtboard->artboard()->dataContext())
+    {
+        viewModelInstance = boundContext->mainViewModelInstance();
+    }
+    // The pin keeps the host's file alive while the script holds the
+    // artboard; the host may swap its own reference out underneath us.
     lua_newrive<ScriptedArtboard>(state,
                                   state,
                                   wrappedArtboard->file().get(),
                                   wrappedArtboard->artboard()->instance(),
-                                  nullptr,
-                                  ref_rcp(dataContext));
+                                  std::move(viewModelInstance),
+                                  ref_rcp(dataContext)
+#ifdef WITH_RIVE_TOOLS
+                                      ,
+                                  wrappedArtboard->file()
+#endif
+    );
 }
 
 EXPORT void riveLuaPushPath(lua_State* state,
@@ -1331,7 +1351,7 @@ EXPORT int riveLuaPushDataContextViewModel(lua_State* state,
     {
         return 0;
     }
-    auto viewModelInstance = dataContext->viewModelInstance();
+    auto viewModelInstance = dataContext->mainViewModelInstance();
     if (viewModelInstance == nullptr)
     {
         return 0;
@@ -1352,18 +1372,7 @@ EXPORT void riveLuaPushBlob(lua_State* state,
     {
         return;
     }
-    auto scriptedBlob = lua_newrive<ScriptedBlob>(state);
-    if (data != nullptr && size > 0)
-    {
-        auto blobAsset = make_rcp<BlobAsset>();
-        if (name != nullptr)
-        {
-            blobAsset->name(name);
-        }
-        SimpleArray<uint8_t> bytes(data, size);
-        blobAsset->decode(bytes, nullptr);
-        scriptedBlob->asset = blobAsset;
-    }
+    lua_push_blob(state, name, data, size);
 }
 
 // Poll for completed async tasks (image decodes, etc.) and invoke callbacks.
@@ -1547,6 +1556,19 @@ EXPORT void riveLuaDisableDrawCanvasPhase(lua_State* state)
     }
 }
 
+EXPORT void riveLuaAdvanceDetachedViewModels(lua_State* state)
+{
+    if (state == nullptr)
+    {
+        return;
+    }
+    auto* context = static_cast<ScriptingContext*>(lua_getthreaddata(state));
+    if (context)
+    {
+        context->advanceDetachedViewModels();
+    }
+}
+
 EXPORT void riveLuaSetExecutionTimeout(lua_State* state, int timeoutMs)
 {
     if (state == nullptr)
@@ -1693,6 +1715,30 @@ EXPORT int riveLuaPushImage(WasmPtr state, WasmPtr renderImage)
     return 1;
 }
 
+#ifndef __EMSCRIPTEN__
+EXPORT int riveLuaPushFont(lua_State* state, rive::Font* font)
+#else
+EXPORT int riveLuaPushFont(WasmPtr state, WasmPtr font)
+#endif
+{
+#ifdef __EMSCRIPTEN__
+    lua_State* L = (lua_State*)state;
+    rive::Font* f = (rive::Font*)font;
+#else
+    lua_State* L = state;
+    rive::Font* f = font;
+#endif
+
+    if (L == nullptr || f == nullptr)
+    {
+        return 0;
+    }
+
+    auto scriptedFont = lua_newrive<ScriptedFont>(L);
+    scriptedFont->font = ref_rcp(f);
+    return 1;
+}
+
 #ifdef __EMSCRIPTEN__
 
 static int lua_callback(lua_State* L)
@@ -1740,6 +1786,7 @@ EMSCRIPTEN_BINDINGS(RiveLuauBinding)
                  return riveLuaConsole((lua_State*)state);
              }));
     function("riveLuaPushImage", &riveLuaPushImage);
+    function("riveLuaPushFont", &riveLuaPushFont);
 
     // VM lifecycle functions - must be in EMSCRIPTEN_BINDINGS because they take
     // emscripten::val callbacks

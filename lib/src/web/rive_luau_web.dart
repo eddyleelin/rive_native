@@ -9,6 +9,7 @@ import 'package:rive_native/src/console_reader.dart';
 import 'package:rive_native/src/rive_native_web.dart';
 import 'package:rive_native/src/web/rive_audio_web.dart';
 import 'package:rive_native/src/web/rive_renderer_web.dart';
+import 'package:rive_native/src/web/rive_text_web.dart' show FontWasm;
 import 'package:rive_native/src/web/rive_web.dart';
 import 'package:rive_native/utilities.dart';
 
@@ -72,6 +73,7 @@ late js.JSFunction _riveLuaToDataValue;
 late js.JSFunction _riveLuaToPath;
 late js.JSFunction _riveLuaPushPath;
 late js.JSFunction _riveLuaPushImage;
+late js.JSFunction _riveLuaPushFont;
 late js.JSFunction _riveLuaRenderPath;
 late js.JSFunction _riveLuaClearStateWithFile;
 late js.JSFunction _riveLuaPushVector;
@@ -107,6 +109,7 @@ late js.JSFunction _riveLuaPushBlob;
 late js.JSFunction _riveLuaPushAudioSource;
 late js.JSFunction _riveLuaEnableDrawCanvasPhase;
 late js.JSFunction _riveLuaDisableDrawCanvasPhase;
+late js.JSFunction _riveLuaAdvanceDetachedViewModels;
 late js.JSFunction _riveLuaPushShader;
 late js.JSFunction _riveLuaPushGPUFeatures;
 late js.JSFunction _riveLuaPushCanvas;
@@ -202,6 +205,7 @@ class LuauStateWasm extends LuauState {
     _riveLuaToPath = module['_riveLuaPath'] as js.JSFunction;
     _riveLuaPushPath = module['_riveLuaPushPath'] as js.JSFunction;
     _riveLuaPushImage = module['riveLuaPushImage'] as js.JSFunction;
+    _riveLuaPushFont = module['riveLuaPushFont'] as js.JSFunction;
     _riveLuaRenderPath = module['_riveLuaRenderPath'] as js.JSFunction;
     _riveLuaClearStateWithFile = module['_clearScriptingVM'] as js.JSFunction;
     _riveLuaPushVector = module['_lua_pushvector2'] as js.JSFunction;
@@ -259,6 +263,8 @@ class LuauStateWasm extends LuauState {
         module['_riveLuaEnableDrawCanvasPhase'] as js.JSFunction;
     _riveLuaDisableDrawCanvasPhase =
         module['_riveLuaDisableDrawCanvasPhase'] as js.JSFunction;
+    _riveLuaAdvanceDetachedViewModels =
+        module['_riveLuaAdvanceDetachedViewModels'] as js.JSFunction;
     _riveLuaPushShader = module['_riveLuaPushShader'] as js.JSFunction;
     _riveLuaPushGPUFeatures =
         module['_riveLuaPushGPUFeatures'] as js.JSFunction;
@@ -1087,6 +1093,16 @@ class LuauStateWasm extends LuauState {
   }
 
   @override
+  int pushFont(Font font) {
+    return (_riveLuaPushFont.callAsFunction(
+      null,
+      _nativePtr,
+      (font as FontWasm).fontPtr.toJS,
+    ) as js.JSNumber)
+        .toDartInt;
+  }
+
+  @override
   int pushCanvas(int width, int height) {
     return (_riveLuaPushCanvas.callAsFunction(
             null, _nativePtr, width.toJS, height.toJS) as js.JSNumber)
@@ -1182,6 +1198,11 @@ class LuauStateWasm extends LuauState {
   @override
   void disableDrawCanvasPhase() {
     _riveLuaDisableDrawCanvasPhase.callAsFunction(null, _nativePtr);
+  }
+
+  @override
+  void advanceDetachedViewModels() {
+    _riveLuaAdvanceDetachedViewModels.callAsFunction(null, _nativePtr);
   }
 
   @override

@@ -119,7 +119,10 @@ if [[ $OS = "wasm" ]]; then
     if [[ ! -f "dependencies/bin/emsdk/emsdk_env.sh" ]]; then
         mkdir -p dependencies/bin
         pushd dependencies/bin
-        git clone https://github.com/emscripten-core/emsdk.git
+        # Pin the emsdk installer to the same release as the toolchain —
+        # emsdk HEAD moves independently (e.g. it now requires Python 3.10+,
+        # which breaks CI runners whose python3 is Xcode's 3.9).
+        git clone --depth 1 --branch 3.1.70 https://github.com/emscripten-core/emsdk.git
         pushd emsdk
         ./emsdk install 3.1.70
         ./emsdk activate 3.1.70
@@ -233,14 +236,33 @@ if [[ $FLUTTER_RUNTIME = "" ]]; then
     RIVE_TOOLS=--with_rive_tools
 fi
 
+# Software decoders for GPU-compressed textures (KTX2: ASTC/ETC2/BC). The
+# editor's GPU backend can't decode every format (e.g. D3D has no ASTC/ETC2),
+# so without these the runtime fails to render compressed textures instead of
+# falling back to a software decode-to-RGBA. RIVE_KTX2 itself is already on by
+# default (gated on `not no-rive-decoders`). Editor-only: the Flutter runtime
+# doesn't need the software fallback, so gate on FLUTTER_RUNTIME like RIVE_TOOLS.
+RIVE_DECODERS=
+if [[ $FLUTTER_RUNTIME = "" ]]; then
+    RIVE_DECODERS="--with_rive_astc_decoder --with_rive_bc_decoder --with_rive_etc_decoder"
+fi
+
 RIVE_NATIVE_PREMAKE_COMMANDS="$WITH_MICROPROFILE --with_rive_canvas --with_rive_scripting --with_objc_exceptions $RIVE_TOOLS --with_rive_text --with_rive_layout --with_rive_audio=$RIVE_AUDIO $CONFIG --variant=$VARIANT $COMPAT $KIND $FLUTTER_RUNTIME $NO_LTO $ASAN $CROSS_COMPILE_OS"
 
 make_rive_native_plugin() {
     local BUILD_OS=$1
     local BUILD_ARCH=$2
     shift 2
+    # The wasm target builds with --no-rive-decoders, which makes the decoders
+    # premake script return early before it registers the --with_rive_*_decoder
+    # options. Passing those flags there fails with "invalid option", so only
+    # include the software decoders for non-wasm builds.
+    local DECODERS=$RIVE_DECODERS
+    if [[ $BUILD_ARCH == "wasm" ]]; then
+        DECODERS=
+    fi
     export RIVE_OUT="$(out_dir $BUILD_OS $BUILD_ARCH)"
-    $RUNTIME_PATH/build_rive.sh $BUILD_ARCH $CONFIG $RIVE_NATIVE_PREMAKE_COMMANDS $@
+    $RUNTIME_PATH/build_rive.sh $BUILD_ARCH $CONFIG $RIVE_NATIVE_PREMAKE_COMMANDS $DECODERS $@
 }
 
 rive_native_lipo_macosx() {
@@ -258,6 +280,17 @@ fi
 # Generate project files.
 
 if [[ $OS = "wasm" ]]; then
+    # ninja does not track the emcc --pre-js/--post-js glue as a dependency of
+    # rive_native.js, so a glue-only change leaves a stale link ("ninja: no
+    # work to do"). Force the relink when the glue is newer than the output.
+    WASM_OUT="out/$CONFIG/$OS$EXTRA_OUT"
+    for glue in platform/wasm/init.js platform/wasm/scripting_work_callbacks.js platform/wasm/externs.js; do
+        if [[ -f "$WASM_OUT/rive_native.js" && "$glue" -nt "$WASM_OUT/rive_native.js" ]]; then
+            echo "wasm glue $glue changed; forcing relink"
+            rm -f "$WASM_OUT/rive_native.js" "$WASM_OUT/rive_native.wasm"
+            break
+        fi
+    done
     make_rive_native_plugin $machine wasm --no-rive-decoders
     if [[ -f "../../editor/web/index.html" ]]; then
         EDITOR_WEB=../../editor/web/$OS$EXTRA_OUT/
@@ -434,6 +467,9 @@ elif [[ $machine = "macosx" ]]; then
             rive_native_lipo_macosx libluau_analyzer.a
             rive_native_lipo_macosx librust_ffi.a
             rive_native_lipo_macosx libbrotli.a
+            # Boolean path operations (real lib for the editor, dummy stub
+            # in flutter_runtime builds -- same pattern as luau/rust_ffi).
+            rive_native_lipo_macosx librive_pathops.a
             # To ensure that the macos podspec file does not overwrite the binaries by downloading them from our bucket
             touch ../macos/rive_marker_macos_development
         fi
@@ -448,7 +484,7 @@ elif [[ $machine = "windows" ]]; then
     fi
     export RIVE_OUT=$(out_dir windows x64)
 
-    $RUNTIME_PATH/build_rive.sh $ACTUAL_CONFIG x64 $FLUTTER_RUNTIME --variant=$VARIANT $USE_DEFAULT_RUNTIME $WITH_MICROPROFILE --with_rive_canvas --with_rive_scripting $RIVE_TOOLS --with_rive_text --with_rive_layout --with_rive_audio=$RIVE_AUDIO --config=$ACTUAL_CONFIG --out=$(out_dir windows x64) --shared
+    $RUNTIME_PATH/build_rive.sh $ACTUAL_CONFIG x64 $FLUTTER_RUNTIME --variant=$VARIANT $USE_DEFAULT_RUNTIME $WITH_MICROPROFILE --with_rive_canvas --with_rive_scripting $RIVE_TOOLS $RIVE_DECODERS --with_rive_text --with_rive_layout --with_rive_audio=$RIVE_AUDIO --config=$ACTUAL_CONFIG --out=$(out_dir windows x64) --shared
     pushd $(out_dir windows x64)
     msbuild.exe rive.sln -m:$NUMBER_OF_PROCESSORS
     popd

@@ -81,9 +81,18 @@ public:
 
     // Add child to parent (or to root nodes if parent is null)
     void addChild(rcp<FocusNode> parent, rcp<FocusNode> child);
+    // Insert as index-th child of parent (0 = first). Same re-parenting as
+    // addChild.
+    void addChild(rcp<FocusNode> parent, rcp<FocusNode> child, size_t index);
 
     // Remove child from its current parent (clears focus if needed)
     void removeChild(rcp<FocusNode> child);
+
+    // Detach child from its current parent WITHOUT clearing focus. Use this
+    // when reordering an existing node (e.g. rebuilding the hierarchy) so the
+    // primary focus and its blur/focus notifications are preserved. For genuine
+    // removal use removeChild instead.
+    void detachChild(rcp<FocusNode> child);
 
     const std::vector<rcp<FocusNode>>& rootNodes() const { return m_rootNodes; }
 
@@ -140,10 +149,31 @@ public:
     }
 #endif
 
+    /// True if any node in the tree is backed by focusable data or can take
+    /// focus — even while currently ineligible for traversal. Structural
+    /// scopes (unbacked, canFocus=false) don't count on their own. Gates
+    /// one-time keyboard setup in high-level runtimes via
+    /// StateMachineInstance::hasFocusNodes().
+    ///
+    /// Cached: high-level runtimes poll this every frame, so the tree walk
+    /// only reruns after markFocusableContentDirty(); otherwise O(1).
+    bool hasFocusableContent() const;
+
+    /// Invalidate the cached hasFocusableContent() answer. Called whenever
+    /// an input to its predicate changes: tree structure (add/remove/erase)
+    /// or a node's focusable backing / canFocus flag.
+    void markFocusableContentDirty() { m_focusableContentDirty = true; }
+
 private:
     rcp<FocusNode> m_primaryFocus;
     std::vector<rcp<FocusNode>> m_rootNodes;
+    // Backing for hasFocusableContent(); mutable so the const getter can
+    // recompute lazily. Starts dirty so the first call computes.
+    mutable bool m_hasFocusableContent = false;
+    mutable bool m_focusableContentDirty = true;
     void removeManager(rcp<FocusNode>);
+    // Erase a node from m_rootNodes if present (no-op otherwise).
+    void eraseRoot(const rcp<FocusNode>& node);
 #ifdef WITH_RIVE_TOOLS
     FocusChangedCallback m_focusChangedCallback = nullptr;
     ScrollIntoViewCallback m_scrollIntoViewCallback = nullptr;

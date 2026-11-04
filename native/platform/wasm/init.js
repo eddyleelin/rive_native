@@ -1,6 +1,20 @@
 Module["onRuntimeInitialized"] = function () {
   const makeRenderer = Module["makeRenderer"];
+  const cppDeleteRenderer = Module["deleteRenderer"];
   let _offscreenGL = null;
+  // Device capabilities from the first feature probe. Immutable for the
+  // page's lifetime, so an offscreen rebuild after releaseOffscreenGL can
+  // skip re-probing (and the extra context the MSAA re-probe would create).
+  let _glCaps = null;
+
+  // Live WebGL2 contexts created by this module (canvases + the offscreen
+  // probe), decremented on genuine release. Browsers cap live contexts
+  // (~16 browser-wide) and expose no way to observe the count, so tests
+  // assert against this instead.
+  let _liveGLContexts = 0;
+  Module["liveGLContextCount"] = function () {
+    return _liveGLContexts;
+  };
 
   function makeGLRenderer(canvas, enableMSAA = false) {
     var contextAttributes = {
@@ -25,6 +39,7 @@ Module["onRuntimeInitialized"] = function () {
 
     GL.makeContextCurrent(handle);
 
+    _liveGLContexts++;
     return {
       "_ptr": makeRenderer(canvas.width, canvas.height),
       _handle: handle,
@@ -33,6 +48,56 @@ Module["onRuntimeInitialized"] = function () {
     };
   }
 
+  // Fully release a renderer made by makeGLRenderer: the C++ renderer (PLS +
+  // ore contexts) first, while its WebGL context is still alive, then the
+  // browser context itself via WEBGL_lose_context. The context slot is the
+  // scarce resource — the browser caps live contexts at ~16 and a lost one
+  // no longer counts.
+  //
+  // Deliberately do NOT GL.deleteContext: objects uploaded to this context
+  // can outlive it (an image's GPU texture is torn down when its File is
+  // disposed, which may be after the render texture died), and that teardown
+  // re-binds the upload context by handle. A lost-but-registered context
+  // makes those glDelete* calls safe no-ops, whereas an unregistered handle
+  // nulls Emscripten's current context and the next GL call crashes with
+  // "Cannot read properties of undefined (reading 'deleteTexture')" — the
+  // same class of bug as runtime_wasm PRs #12770/#12886. The registry entry
+  // it keeps is a few objects per released texture; the context itself is
+  // gone.
+  function releaseGLRenderer(renderer) {
+    if (renderer["_ptr"]) {
+      cppDeleteRenderer(renderer["_ptr"]);
+      renderer["_ptr"] = 0;
+    }
+    const lose = renderer._gl.getExtension("WEBGL_lose_context");
+    if (lose) {
+      lose.loseContext();
+    }
+    if (_activeRenderer === renderer) {
+      _activeRenderer = null;
+    }
+    // Unconditional: the extension is universally implemented, and remains
+    // queryable even on a lost context (it is the recovery extension) — a
+    // null `lose` in practice means the context is already lost, i.e. its
+    // browser slot is already free and this release is pure bookkeeping.
+    _liveGLContexts--;
+  }
+
+  // Genuinely destroy a renderer returned by Module["makeRenderer"] — used
+  // by the Dart side when a disposed render texture doesn't go back to the
+  // (bounded) pool.
+  Module["releaseRenderer"] = releaseGLRenderer;
+
+  // Release the shared offscreen probe context (feature detection + GPU
+  // limits). Recreated on demand by the next makeRenderer call; lets an idle
+  // page drop to zero live contexts.
+  Module["releaseOffscreenGL"] = function () {
+    if (_offscreenGL) {
+      releaseGLRenderer(_offscreenGL);
+      _offscreenGL = null;
+    }
+  };
+
   Module["makeRenderer"] = function (canvas) {
     if (!_offscreenGL) {
       function MakeOffscreenGL(enableMSAA) {
@@ -40,6 +105,12 @@ Module["onRuntimeInitialized"] = function () {
         offscreenCanvas.width = 1;
         offscreenCanvas.height = 1;
         _offscreenGL = makeGLRenderer(offscreenCanvas, enableMSAA);
+        if (!_offscreenGL) {
+          throw new Error(
+            "Rive: failed to create a WebGL2 context. WebGL2 may be " +
+              "unavailable or disabled in this environment.",
+          );
+        }
 
         _offscreenGL._hasPixelLocalStorage = Boolean(
           _offscreenGL._gl.getExtension("WEBGL_shader_pixel_local_storage"),
@@ -78,16 +149,51 @@ Module["onRuntimeInitialized"] = function () {
         return _offscreenGL;
       }
 
-      _offscreenGL = MakeOffscreenGL(/*enableMSAA =*/ true);
-      if (!_offscreenGL._enableAntialiasCanvas) {
-        // This browser prefers "antialias:false". Re-create the offscreen without MSAA.
-        _offscreenGL = MakeOffscreenGL(/*enableMSAA =*/ false);
+      if (_glCaps) {
+        // Rebuild after releaseOffscreenGL, reusing the cached probe results.
+        const offscreenCanvas = document.createElement("canvas");
+        offscreenCanvas.width = 1;
+        offscreenCanvas.height = 1;
+        _offscreenGL = makeGLRenderer(
+          offscreenCanvas,
+          _glCaps._enableAntialiasCanvas,
+        );
+        if (!_offscreenGL) {
+          throw new Error(
+            "Rive: failed to create a WebGL2 context. WebGL2 may be " +
+              "unavailable or disabled in this environment.",
+          );
+        }
+        Object.assign(_offscreenGL, _glCaps);
+      } else {
+        _offscreenGL = MakeOffscreenGL(/*enableMSAA =*/ true);
+        if (!_offscreenGL._enableAntialiasCanvas) {
+          // This browser prefers "antialias:false". Re-create the offscreen without MSAA.
+          const msaaProbe = _offscreenGL;
+          _offscreenGL = MakeOffscreenGL(/*enableMSAA =*/ false);
+          // Release the discarded probe (C++ renderer + WebGL context): an
+          // idle context still occupies one of the browser's ~16 slots,
+          // contributing to context-loss evictions elsewhere (including
+          // Flutter's own CanvasKit surfaces).
+          releaseGLRenderer(msaaProbe);
+        }
+        _glCaps = {
+          _hasPixelLocalStorage: _offscreenGL._hasPixelLocalStorage,
+          _maxRTSize: _offscreenGL._maxRTSize,
+          _enableAntialiasCanvas: _offscreenGL._enableAntialiasCanvas,
+        };
       }
     }
     var renderer = makeGLRenderer(
       canvas,
       /*enableMSAA =*/ _offscreenGL._enableAntialiasCanvas,
     );
+    if (!renderer) {
+      throw new Error(
+        "Rive: failed to create a WebGL2 context for a canvas — the " +
+          "browser's live WebGL context limit may be exhausted.",
+      );
+    }
     if (renderer) {
       // Extract the renderer-owned ore + PLS render context pointers.
       // These are created in the WebGL2Renderer constructor in the same
@@ -96,6 +202,9 @@ Module["onRuntimeInitialized"] = function () {
       renderer._renderCtxPtr = Module["_rendererGetGPURenderContext"](
         renderer["_ptr"],
       );
+      // The GPU's render-target limit, used to clamp canvas backing sizes in
+      // clearRenderer (a backing beyond it fails to render at all).
+      renderer._maxRTSize = _offscreenGL._maxRTSize;
       // Track the most recently created renderer so clearRenderer() can
       // restore the correct GL context each frame.
       _activeRenderer = renderer;
@@ -110,14 +219,41 @@ Module["onRuntimeInitialized"] = function () {
   // ore operations that may have changed it.
   let _activeRenderer = null;
 
-
   Module["clearRenderer"] = function (renderer, color) {
     _activeRenderer = renderer;
     GL.makeContextCurrent(renderer._handle);
 
     const canvas = renderer._canvas;
-    const w = canvas.clientWidth * window.devicePixelRatio || 1;
-    const h = canvas.clientHeight * window.devicePixelRatio || 1;
+    // Backing policy is pushed onto the renderer by the Dart side
+    // (RenderResolution): an explicit physical size wins; otherwise size from
+    // the element's layout × devicePixelRatio × per-axis scales (which carry
+    // the ancestor paint scale under the display policy), capped at a logical
+    // max (aspect preserved). Everything is finally clamped to the GPU's
+    // render-target limit.
+    let w, h;
+    if (renderer._fixedWidth > 0 && renderer._fixedHeight > 0) {
+      w = renderer._fixedWidth;
+      h = renderer._fixedHeight;
+    } else {
+      let lw = canvas.clientWidth * (renderer._backingScaleX || 1);
+      let lh = canvas.clientHeight * (renderer._backingScaleY || 1);
+      const maxLogical = renderer._maxBackingLogical || 0;
+      const longest = Math.max(lw, lh);
+      if (maxLogical > 0 && longest > maxLogical) {
+        const f = maxLogical / longest;
+        lw *= f;
+        lh *= f;
+      }
+      w = Math.round(lw * window.devicePixelRatio) || 1;
+      h = Math.round(lh * window.devicePixelRatio) || 1;
+    }
+    const maxRT = renderer._maxRTSize || 0;
+    const longestPhysical = Math.max(w, h);
+    if (maxRT > 0 && longestPhysical > maxRT) {
+      const f = maxRT / longestPhysical;
+      w = Math.max(1, Math.floor(w * f));
+      h = Math.max(1, Math.floor(h * f));
+    }
     if (canvas.width != w || canvas.height != h) {
       canvas.width = w;
       canvas.height = h;
@@ -177,6 +313,43 @@ Module["onRuntimeInitialized"] = function () {
       "points": Module["heapViewF32"](ptsStart, pointCount * 2),
     };
   };
+
+  // Editor-only boolean path ops (absent in flutter_runtime wasm builds).
+  // Like makeGlyphPath, converts the embind value_array (indexed, raw heap
+  // pointers) into an object with named fields and typed-array views.
+  var nativePathOpsResult = function (result) {
+    var verbCount = result[3];
+    var pointCount = result[4];
+    return {
+      "rawPath": result[0],
+      "points": Module["heapViewF32"](result[1], pointCount * 2),
+      "verbs": Module["heapViewU8"](result[2], verbCount),
+      "verbCount": verbCount,
+      "pointCount": pointCount,
+      "fillRule": result[5],
+      "success": result[6],
+    };
+  };
+  // Editor-only exports (excluded from flutter_runtime modules). Gate on
+  // ALL of them so a partial module leaves everything unwrapped and the
+  // Dart side's link() fails closed (pathOpsAvailable == false) instead of
+  // wrapping a missing export.
+  if (
+    Module["combinePaths"] &&
+    Module["simplifyPath"] &&
+    Module["deletePathOpsResult"]
+  ) {
+    var nativeCombinePaths = Module["combinePaths"];
+    Module["combinePaths"] = function (op, ptsA, vbsA, fillA, ptsB, vbsB, fillB) {
+      return nativePathOpsResult(
+        nativeCombinePaths(op, ptsA, vbsA, fillA, ptsB, vbsB, fillB)
+      );
+    };
+    var nativeSimplifyPath = Module["simplifyPath"];
+    Module["simplifyPath"] = function (pts, vbs, fill) {
+      return nativePathOpsResult(nativeSimplifyPath(pts, vbs, fill));
+    };
+  }
 
   var nativeShapeText = Module["shapeText"];
   Module["shapeText"] = function (codeUnits, runsList, level) {

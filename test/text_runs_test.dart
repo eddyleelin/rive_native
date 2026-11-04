@@ -1,9 +1,10 @@
 // ignore_for_file: deprecated_member_use_from_same_package
 
-import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rive_native/rive_native.dart' as rive;
+
+import 'src/utils.dart';
 
 /// Expected data for a text run
 class ExpectedTextRun {
@@ -24,8 +25,7 @@ class ExpectedTextRun {
 
 void main() {
   test('text run get/set', () async {
-    final file = File('test/assets/text_run_test.riv');
-    final bytes = await file.readAsBytes();
+    final bytes = loadFile('assets/text_run_test.riv');
     final riveFactory = rive.Factory.flutter;
     final riveFile = await rive.File.decode(
       bytes,
@@ -47,8 +47,7 @@ void main() {
   });
 
   test('text run get/set nested', () async {
-    final file = File('test/assets/runtime_nested_text_runs.riv');
-    final bytes = await file.readAsBytes();
+    final bytes = loadFile('assets/runtime_nested_text_runs.riv');
     final riveFactory = rive.Factory.flutter;
     final riveFile = await rive.File.decode(
       bytes,
@@ -74,8 +73,7 @@ void main() {
   });
 
   test('get all text runs', () async {
-    final file = File('test/assets/get_all_text_runs_test.riv');
-    final bytes = await file.readAsBytes();
+    final bytes = loadFile('assets/get_all_text_runs_test.riv');
     final riveFactory = rive.Factory.flutter;
     final riveFile = await rive.File.decode(
       bytes,
@@ -233,8 +231,7 @@ void main() {
   });
 
   test('get all text runs - empty artboard', () async {
-    final file = File('test/assets/get_all_text_runs_test.riv');
-    final bytes = await file.readAsBytes();
+    final bytes = loadFile('assets/get_all_text_runs_test.riv');
     final riveFactory = rive.Factory.flutter;
     final riveFile = await rive.File.decode(
       bytes,

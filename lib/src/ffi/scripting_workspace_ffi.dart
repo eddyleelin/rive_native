@@ -61,6 +61,101 @@ int Function(
   Pointer<Utf8> scriptId,
   Pointer<Utf8> scriptName,
   Pointer<Utf8> source,
+  int libraryId,
+  int libraryVersionId,
+  bool highlight,
+)
+_setScriptSourceScoped = _nativeLib
+    .lookup<
+      NativeFunction<
+        Uint64 Function(
+          Pointer<Void>,
+          Pointer<Utf8>,
+          Pointer<Utf8>,
+          Pointer<Utf8>,
+          Uint64,
+          Uint64,
+          Bool,
+        )
+      >
+    >('scriptingWorkspaceSetScriptSourceScoped')
+    .asFunction();
+
+void Function(
+  Pointer<Void> workspace,
+  Pointer<Utf8> scriptId,
+  int libraryId,
+  int libraryVersionId,
+)
+_setScriptScope = _nativeLib
+    .lookup<
+      NativeFunction<Void Function(Pointer<Void>, Pointer<Utf8>, Uint64, Uint64)>
+    >('scriptingWorkspaceSetScriptScope')
+    .asFunction();
+
+void Function(
+  Pointer<Void> workspace,
+  int callerLibraryId,
+  int callerLibraryVersionId,
+  Pointer<Utf8> name,
+  int targetLibraryId,
+  int targetLibraryVersionId,
+)
+_setLibraryImport = _nativeLib
+    .lookup<
+      NativeFunction<
+        Void Function(
+          Pointer<Void>,
+          Uint64,
+          Uint64,
+          Pointer<Utf8>,
+          Uint64,
+          Uint64,
+        )
+      >
+    >('scriptingWorkspaceSetLibraryImport')
+    .asFunction();
+
+void Function(
+  Pointer<Void> workspace,
+  int callerLibraryId,
+  int callerLibraryVersionId,
+  Pointer<Utf8> name,
+)
+_removeLibraryImport = _nativeLib
+    .lookup<
+      NativeFunction<
+        Void Function(Pointer<Void>, Uint64, Uint64, Pointer<Utf8>)
+      >
+    >('scriptingWorkspaceRemoveLibraryImport')
+    .asFunction();
+
+int Function(Pointer<Void> workspace, Pointer<Utf8> scriptId)
+_rewriteRequires = _nativeLib
+    .lookup<NativeFunction<Uint64 Function(Pointer<Void>, Pointer<Utf8>)>>(
+      'scriptingWorkspaceRewriteRequires',
+    )
+    .asFunction();
+
+void Function(
+  Pointer<Void> workspace,
+  int libraryId,
+  int libraryVersionId,
+  Pointer<Utf8> canonicalName,
+)
+_setLibraryCanonicalName = _nativeLib
+    .lookup<
+      NativeFunction<
+        Void Function(Pointer<Void>, Uint64, Uint64, Pointer<Utf8>)
+      >
+    >('scriptingWorkspaceSetLibraryCanonicalName')
+    .asFunction();
+
+int Function(
+  Pointer<Void> workspace,
+  Pointer<Utf8> scriptId,
+  Pointer<Utf8> scriptName,
+  Pointer<Utf8> source,
   int scriptType,
   bool highlight,
 )
@@ -519,17 +614,32 @@ class ScriptingWorkspaceFFI extends ScriptingWorkspace {
     String scriptName,
     String source, {
     bool highlight = false,
+    int libraryId = 0,
+    int libraryVersionId = 0,
   }) async {
     final scriptIdNative = scriptId.toNativeUtf8(allocator: calloc);
     final scriptNameNative = scriptName.toNativeUtf8(allocator: calloc);
     final sourceNative = toNativeString(source);
-    final workId = _setScriptSource(
-      _nativeWorkspace,
-      scriptIdNative,
-      scriptNameNative,
-      sourceNative,
-      highlight,
-    );
+    final int workId;
+    if (libraryId == 0 && libraryVersionId == 0) {
+      workId = _setScriptSource(
+        _nativeWorkspace,
+        scriptIdNative,
+        scriptNameNative,
+        sourceNative,
+        highlight,
+      );
+    } else {
+      workId = _setScriptSourceScoped(
+        _nativeWorkspace,
+        scriptIdNative,
+        scriptNameNative,
+        sourceNative,
+        libraryId,
+        libraryVersionId,
+        highlight,
+      );
+    }
     calloc.free(scriptNameNative);
     calloc.free(scriptIdNative);
     if (!highlight) {
@@ -539,6 +649,75 @@ class ScriptingWorkspaceFFI extends ScriptingWorkspace {
       return HighlightResult(HighlightResultType.unknown);
     }
     return registerCompleter(workId);
+  }
+
+  @override
+  void setScriptScope(String scriptId, int libraryId, int libraryVersionId) {
+    final scriptIdNative = scriptId.toNativeUtf8(allocator: calloc);
+    _setScriptScope(
+        _nativeWorkspace, scriptIdNative, libraryId, libraryVersionId);
+    calloc.free(scriptIdNative);
+  }
+
+  @override
+  void setLibraryImport(
+    int callerLibraryId,
+    int callerLibraryVersionId,
+    String name,
+    int targetLibraryId,
+    int targetLibraryVersionId,
+  ) {
+    final nameNative = name.toNativeUtf8(allocator: calloc);
+    _setLibraryImport(
+      _nativeWorkspace,
+      callerLibraryId,
+      callerLibraryVersionId,
+      nameNative,
+      targetLibraryId,
+      targetLibraryVersionId,
+    );
+    calloc.free(nameNative);
+  }
+
+  @override
+  void removeLibraryImport(
+    int callerLibraryId,
+    int callerLibraryVersionId,
+    String name,
+  ) {
+    final nameNative = name.toNativeUtf8(allocator: calloc);
+    _removeLibraryImport(
+      _nativeWorkspace,
+      callerLibraryId,
+      callerLibraryVersionId,
+      nameNative,
+    );
+    calloc.free(nameNative);
+  }
+
+  @override
+  Future<String> rewriteRequires(String scriptId) async {
+    if (isClosing) {
+      return '';
+    }
+    final workId = _rewriteRequires(_nativeWorkspace, toNativeString(scriptId));
+    return registerCompleter(workId);
+  }
+
+  @override
+  void setLibraryCanonicalName(
+    int libraryId,
+    int libraryVersionId,
+    String canonicalName,
+  ) {
+    final canonicalNameNative = canonicalName.toNativeUtf8(allocator: calloc);
+    _setLibraryCanonicalName(
+      _nativeWorkspace,
+      libraryId,
+      libraryVersionId,
+      canonicalNameNative,
+    );
+    calloc.free(canonicalNameNative);
   }
 
   @override

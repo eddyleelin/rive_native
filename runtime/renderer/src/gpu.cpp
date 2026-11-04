@@ -30,7 +30,7 @@ static Span<const DrawType> get_valid_draw_types(InterlockMode mode)
                 DrawType::midpointFanCenterAAPatches,
                 DrawType::outerCurvePatches,
                 DrawType::interiorTriangulation,
-                DrawType::atlasBlit,
+                DrawType::featherAtlasBlit,
                 DrawType::imageMesh,
                 DrawType::renderPassResolve,
             };
@@ -44,7 +44,7 @@ static Span<const DrawType> get_valid_draw_types(InterlockMode mode)
                 DrawType::midpointFanCenterAAPatches,
                 DrawType::outerCurvePatches,
                 DrawType::interiorTriangulation,
-                DrawType::atlasBlit,
+                DrawType::featherAtlasBlit,
                 DrawType::imageMesh,
             };
             return make_span(types);
@@ -56,7 +56,7 @@ static Span<const DrawType> get_valid_draw_types(InterlockMode mode)
                 DrawType::midpointFanCenterAAPatches,
                 DrawType::outerCurvePatches,
                 DrawType::interiorTriangulation,
-                DrawType::atlasBlit,
+                DrawType::featherAtlasBlit,
                 DrawType::imageRect,
                 DrawType::imageMesh,
                 DrawType::renderPassInitialize,
@@ -71,7 +71,7 @@ static Span<const DrawType> get_valid_draw_types(InterlockMode mode)
                 DrawType::midpointFanCenterAAPatches,
                 DrawType::outerCurvePatches,
                 DrawType::interiorTriangulation,
-                DrawType::atlasBlit,
+                DrawType::featherAtlasBlit,
                 DrawType::imageMesh,
                 DrawType::clipReset,
                 DrawType::renderPassInitialize,
@@ -81,7 +81,7 @@ static Span<const DrawType> get_valid_draw_types(InterlockMode mode)
         case InterlockMode::msaa:
         {
             static constexpr DrawType types[] = {
-                DrawType::atlasBlit,
+                DrawType::featherAtlasBlit,
                 DrawType::imageMesh,
                 DrawType::msaaStrokes,
                 DrawType::msaaMidpointFanBorrowedCoverage,
@@ -153,11 +153,12 @@ static ShaderMiscFlags get_valid_shader_misc_flags(DrawType drawType,
             }
             break;
 
-        case DrawType::atlasBlit:
+        case DrawType::featherAtlasBlit:
         case DrawType::imageRect:
         case DrawType::imageMesh:
         case DrawType::msaaStrokes:
         case DrawType::msaaMidpointFanBorrowedCoverage:
+        case DrawType::msaaDynamicMidpointFans:
         case DrawType::msaaMidpointFans:
         case DrawType::msaaMidpointFanStencilReset:
         case DrawType::msaaMidpointFanPathsStencil:
@@ -329,6 +330,7 @@ uint32_t ShaderUniqueKey(DrawType drawType,
         case DrawType::outerCurvePatches:
         case DrawType::msaaStrokes:
         case DrawType::msaaMidpointFanBorrowedCoverage:
+        case DrawType::msaaDynamicMidpointFans:
         case DrawType::msaaMidpointFans:
         case DrawType::msaaMidpointFanStencilReset:
         case DrawType::msaaMidpointFanPathsStencil:
@@ -339,7 +341,7 @@ uint32_t ShaderUniqueKey(DrawType drawType,
         case DrawType::interiorTriangulation:
             drawTypeKey = 1;
             break;
-        case DrawType::atlasBlit:
+        case DrawType::featherAtlasBlit:
             drawTypeKey = 2;
             break;
         case DrawType::imageRect:
@@ -772,14 +774,15 @@ FlushUniforms::FlushUniforms(const FlushDescriptor& flushDesc,
     m_colorClearValue(SwizzleRiveColorToRGBAPremul(flushDesc.colorClearValue)),
     m_coverageClearValue(flushDesc.coverageClearValue),
     m_renderTargetUpdateBounds(flushDesc.renderTargetUpdateBounds),
-    m_atlasTextureInverseSize(1.f / flushDesc.atlasTextureWidth,
-                              1.f / flushDesc.atlasTextureHeight),
-    m_atlasContentInverseViewport(2.f / flushDesc.atlasContentWidth,
-                                  (platformFeatures.clipSpaceBottomUp !=
-                                           platformFeatures.framebufferBottomUp
-                                       ? -2.f
-                                       : 2.f) /
-                                      flushDesc.atlasContentHeight),
+    m_featherAtlasTextureInverseSize(1.f / flushDesc.featherAtlasTextureWidth,
+                                     1.f / flushDesc.featherAtlasTextureHeight),
+    m_featherAtlasContentInverseViewport(
+        2.f / flushDesc.featherAtlasContentWidth,
+        (platformFeatures.clipSpaceBottomUp !=
+                 platformFeatures.framebufferBottomUp
+             ? -2.f
+             : 2.f) /
+            flushDesc.featherAtlasContentHeight),
     m_coverageBufferPrefix(flushDesc.coverageBufferPrefix),
     m_epsilonForPseudoMemoryBarrier(1e-9f),
     m_pathIDGranularity(platformFeatures.pathIDGranularity),
@@ -805,20 +808,38 @@ static void write_matrix(volatile float* dst, const Mat2D& matrix)
     }
 }
 
+// Writes just the 2x2 (scale & skew) part of a Mat2D.
+static void write2x2(volatile float* dst, const Mat2D& matrix)
+{
+    const float* vals = matrix.values();
+    for (size_t i = 0; i < 4; ++i)
+    {
+        dst[i] = vals[i];
+    }
+}
+
+// Writes just the translation part of a Mat2D.
+static void writeTranslate(volatile float* dst, const Mat2D& matrix)
+{
+    const float* vals = matrix.values();
+    dst[0] = vals[4];
+    dst[1] = vals[5];
+}
+
 void PathData::set(const Mat2D& m,
                    float strokeRadius,
                    float featherRadius,
                    uint32_t zIndex,
-                   const AtlasTransform& atlasTransform,
+                   const AtlasTransform& featherAtlasTransform,
                    const CoverageBufferRange& coverageBufferRange)
 {
     write_matrix(m_matrix, m);
     m_strokeRadius = strokeRadius; // 0 if the path is filled.
     m_zIndex = zIndex;
     m_featherRadius = featherRadius;
-    m_atlasTransform.scaleFactor = atlasTransform.scaleFactor;
-    m_atlasTransform.translateX = atlasTransform.translateX;
-    m_atlasTransform.translateY = atlasTransform.translateY;
+    m_featherAtlasTransform.scaleFactor = featherAtlasTransform.scaleFactor;
+    m_featherAtlasTransform.translateX = featherAtlasTransform.translateX;
+    m_featherAtlasTransform.translateY = featherAtlasTransform.translateY;
     m_coverageBufferRange.offset = coverageBufferRange.offset;
     m_coverageBufferRange.pitch = coverageBufferRange.pitch;
     m_coverageBufferRange.offsetX = coverageBufferRange.offsetX;
@@ -1004,7 +1025,7 @@ void PaintAuxData::set(const Mat2D& viewMatrix,
     }
 }
 
-ImageDrawUniforms::ImageDrawUniforms(
+ImageDrawInstance::ImageDrawInstance(
     const Mat2D& matrix,
     float opacity,
     const ClipRectInverseMatrix* clipRectInverseMatrix,
@@ -1012,12 +1033,56 @@ ImageDrawUniforms::ImageDrawUniforms(
     BlendMode blendMode,
     uint32_t zIndex)
 {
-    write_matrix(m_matrix, matrix);
+    // The backends bind the 4 attributes at byte offset i*16, relying on this
+    // grouping.
+    static_assert(ImageDrawInstance::FirstAttribIdx == IMAGE_FIRST_ATTRIB_IDX);
+    static_assert(ImageDrawInstance::LastAttribIdx == IMAGE_LAST_ATTRIB_IDX);
+    static_assert(offsetof(ImageDrawInstance, m_viewMatrix) ==
+                  (IMAGE_VIEW_MATRIX_ATTRIB_IDX - IMAGE_FIRST_ATTRIB_IDX) *
+                      sizeof(uint32_t) * 4);
+    static_assert(
+        offsetof(ImageDrawInstance, m_clipRectInverseMatrix) ==
+        (IMAGE_CLIP_RECT_INVERSE_MATRIX_ATTRIB_IDX - IMAGE_FIRST_ATTRIB_IDX) *
+            sizeof(uint32_t) * 4);
+    static_assert(offsetof(ImageDrawInstance, m_translate) ==
+                  (IMAGE_TRANSLATES_ATTRIB_IDX - IMAGE_FIRST_ATTRIB_IDX) *
+                      sizeof(uint32_t) * 4);
+    static_assert(offsetof(ImageDrawInstance, m_opacity) ==
+                  (IMAGE_PACKED_ATTRIBS_IDX - IMAGE_FIRST_ATTRIB_IDX) *
+                      sizeof(uint32_t) * 4);
+
+    // When SPLIT_UINT4_ATTRIBUTES is set (Unreal RHI, whose shader compiler
+    // mishandles a uint4 vertex attribute), the packed uint4 is bound as four
+    // separate uint attributes at consecutive locations.
+    static_assert(IMAGE_SPLIT_OPACITY_ATTRIB_IDX == IMAGE_PACKED_ATTRIBS_IDX);
+    static_assert(
+        offsetof(ImageDrawInstance, m_clipID) ==
+        ((IMAGE_PACKED_ATTRIBS_IDX - IMAGE_FIRST_ATTRIB_IDX) * 4 +
+         (IMAGE_SPLIT_CLIP_ID_ATTRIB_IDX - IMAGE_SPLIT_OPACITY_ATTRIB_IDX)) *
+            sizeof(uint32_t));
+    static_assert(
+        offsetof(ImageDrawInstance, m_blendMode) ==
+        ((IMAGE_PACKED_ATTRIBS_IDX - IMAGE_FIRST_ATTRIB_IDX) * 4 +
+         (IMAGE_SPLIT_BLEND_MODE_ATTRIB_IDX - IMAGE_SPLIT_OPACITY_ATTRIB_IDX)) *
+            sizeof(uint32_t));
+    static_assert(
+        offsetof(ImageDrawInstance, m_zIndex) ==
+        ((IMAGE_PACKED_ATTRIBS_IDX - IMAGE_FIRST_ATTRIB_IDX) * 4 +
+         (IMAGE_SPLIT_ZINDEX_ATTRIB_IDX - IMAGE_SPLIT_OPACITY_ATTRIB_IDX)) *
+            sizeof(uint32_t));
+    static_assert(sizeof(ImageDrawInstance) ==
+                  IMAGE_ATTRIB_COUNT * sizeof(uint32_t) * 4);
+
+    const Mat2D clipRectInverseMatrixToWrite =
+        clipRectInverseMatrix != nullptr
+            ? clipRectInverseMatrix->inverseMatrix()
+            : ClipRectInverseMatrix::WideOpen().inverseMatrix();
+
+    write2x2(m_viewMatrix, matrix);
+    write2x2(m_clipRectInverseMatrix, clipRectInverseMatrixToWrite);
+    writeTranslate(m_translate, matrix);
+    writeTranslate(m_clipRectInverseTranslate, clipRectInverseMatrixToWrite);
     m_opacity = opacity;
-    write_matrix(m_clipRectInverseMatrix,
-                 clipRectInverseMatrix != nullptr
-                     ? clipRectInverseMatrix->inverseMatrix()
-                     : ClipRectInverseMatrix::WideOpen().inverseMatrix());
     m_clipID = clipID;
     m_blendMode = ConvertBlendModeToPLSBlendMode(blendMode);
     m_zIndex = zIndex;
@@ -1083,7 +1148,7 @@ DepthState get_depth_state(InterlockMode interlockMode,
     {
         case DrawType::imageRect:
         case DrawType::imageMesh:
-        case DrawType::atlasBlit:
+        case DrawType::featherAtlasBlit:
         case DrawType::outerCurvePatches:
         case DrawType::msaaMidpointFanBorrowedCoverage:
         case DrawType::msaaMidpointFanPathsStencil:
@@ -1096,6 +1161,7 @@ DepthState get_depth_state(InterlockMode interlockMode,
             return {.depthTestEnabled = true, .depthWriteEnabled = true};
             break;
 
+        case DrawType::msaaDynamicMidpointFans:
         case DrawType::msaaMidpointFans:
         case DrawType::msaaMidpointFanPathsCover:
             return {
@@ -1143,7 +1209,7 @@ StencilInfo get_stencil_info(InterlockMode interlockMode,
     {
         case DrawType::imageRect:
         case DrawType::imageMesh:
-        case DrawType::atlasBlit:
+        case DrawType::featherAtlasBlit:
         case DrawType::msaaStrokes:
         case DrawType::msaaOuterCubics:
             if (enums::is_flag_set(drawContents, DrawContents::activeClip))
@@ -1170,6 +1236,7 @@ StencilInfo get_stencil_info(InterlockMode interlockMode,
                 areDrawContentsValid,
             };
 
+        case DrawType::msaaDynamicMidpointFans:
         case DrawType::msaaMidpointFans:
             return {
                 StencilType::forwardClippedByBackward,
@@ -1278,9 +1345,9 @@ static void get_stencil_settings(InterlockMode interlockMode,
             pipelineState->stencilWriteMask = 0xff;
             pipelineState->stencilReference = 0x80;
             pipelineState->stencilFrontOps = {
-                .failOp = StencilOp::keep,
-                .passOp = StencilOp::keep,
+                .stencilFailOp = StencilOp::keep,
                 .depthFailOp = StencilOp::keep,
+                .depthStencilPassOp = StencilOp::keep,
                 .compareOp = StencilCompareOp::equal,
             };
 
@@ -1293,63 +1360,63 @@ static void get_stencil_settings(InterlockMode interlockMode,
             pipelineState->stencilCompareMask = 0xff;
             pipelineState->stencilWriteMask = 0x7f;
             pipelineState->stencilReference = 0x80;
+
+            // Pass: 1 render borrowed coverage, early-rejected by depth.
+            // NOTE: Only back faces survive this draw. We set "stencilFrontOps"
+            // because "stencilDoubleSided=false" applies these settings to the
+            // back face as well.
             pipelineState->stencilFrontOps = {
-                .failOp = StencilOp::keep,
-                .passOp = StencilOp::incrWrap,
+                .stencilFailOp = StencilOp::keep,
                 .depthFailOp = StencilOp::keep,
+                .depthStencilPassOp = StencilOp::incrWrap,
                 .compareOp = hasActiveClip ? StencilCompareOp::lessOrEqual
                                            : StencilCompareOp::always,
             };
             pipelineState->stencilDoubleSided = false;
             break;
 
+        // forwardClippedByBackward and backwardTriangleCleanup share stencil
+        // settings (one takes front face and the other takes back).
         case StencilType::forwardClippedByBackward:
-            // Draw forward triangles, clipped by the backward triangle counts.
-            // (The depth test prevents double hits.)
-            pipelineState->stencilCompareMask = hasActiveClip ? 0xff : 0x7f;
-            pipelineState->stencilWriteMask = isClipUpdate ? 0xff : 0x7f;
-            pipelineState->stencilReference = 0x80;
-            pipelineState->stencilFrontOps = {
-                .failOp = StencilOp::decrClamp, // Don't wrap; 0 must stay 0
-                                                // outside the clip.
-                .passOp = isClipUpdate ? StencilOp::replace : StencilOp::keep,
-                .depthFailOp = StencilOp::keep,
-                .compareOp = StencilCompareOp::equal,
-            };
-            pipelineState->stencilBackOps = {
-                .failOp = StencilOp::keep,
-                .passOp = isClipUpdate ? StencilOp::replace : StencilOp::zero,
-                .depthFailOp = StencilOp::keep,
-                .compareOp = StencilCompareOp::less,
-            };
-            pipelineState->stencilDoubleSided = true;
-            break;
-
         case StencilType::backwardTriangleCleanup:
-            // Clean up backward triangles in the stencil buffer, (also filling
-            // negative winding numbers for nonZero fill).
             pipelineState->stencilCompareMask = hasActiveClip ? 0xff : 0x7f;
-            pipelineState->stencilWriteMask =
-                isClockwiseFill
-                    // For clockwise fill, disable clip-bit writes when cleaning
-                    // up backward triangles. Clockwise only fills in forward
-                    // triangles.
-                    ? 0x7f
-                    : (isClipUpdate ? 0xff : 0x7f);
+            if (stencilInfo.stencilType ==
+                    StencilType::backwardTriangleCleanup &&
+                isClockwiseFill)
+            {
+                // For clockwise fill, always disable clip-bit writes when
+                // cleaning up backward triangles. Clockwise only fills in
+                // forward triangles.
+                pipelineState->stencilWriteMask = 0x7f;
+            }
+            else
+            {
+                pipelineState->stencilWriteMask = isClipUpdate ? 0xff : 0x7f;
+            }
             pipelineState->stencilReference = 0x80;
+
+            // Pass: 2 render forward triangles. Unfortunately, we have to
+            // decrement borrowed coverage on a stencil fail, so this may
+            // interfere with Hi-Z optimizations.
             pipelineState->stencilFrontOps = {
-                .failOp = StencilOp::decrClamp, // Don't wrap; 0 must stay 0
-                                                // outside the clip.
-                .passOp = isClipUpdate ? StencilOp::replace : StencilOp::keep,
+                .stencilFailOp =
+                    StencilOp::decrClamp, // Don't wrap; 0 must stay 0
+                                          // outside the clip.
                 .depthFailOp = StencilOp::keep,
+                .depthStencilPassOp =
+                    isClipUpdate ? StencilOp::replace : StencilOp::keep,
                 .compareOp = StencilCompareOp::equal,
             };
+
+            // Pass 3: clean up borrowed coverage from the stencil.
             pipelineState->stencilBackOps = {
-                .failOp = StencilOp::keep,
-                .passOp = isClipUpdate ? StencilOp::replace : StencilOp::zero,
+                .stencilFailOp = StencilOp::keep,
                 .depthFailOp = StencilOp::keep,
+                .depthStencilPassOp =
+                    isClipUpdate ? StencilOp::replace : StencilOp::zero,
                 .compareOp = StencilCompareOp::less,
             };
+
             pipelineState->stencilDoubleSided = true;
             break;
 
@@ -1362,16 +1429,16 @@ static void get_stencil_settings(InterlockMode interlockMode,
             // Decrement front-facing triangles so the MSB is set when
             // clockwise.
             pipelineState->stencilFrontOps = {
-                .failOp = StencilOp::keep,
-                .passOp = StencilOp::decrWrap,
+                .stencilFailOp = StencilOp::keep,
                 .depthFailOp = StencilOp::keep,
+                .depthStencilPassOp = StencilOp::decrWrap,
                 .compareOp = hasActiveClip ? StencilCompareOp::lessOrEqual
                                            : StencilCompareOp::always,
             };
             pipelineState->stencilBackOps = {
-                .failOp = pipelineState->stencilFrontOps.failOp,
-                .passOp = StencilOp::incrWrap,
+                .stencilFailOp = pipelineState->stencilFrontOps.stencilFailOp,
                 .depthFailOp = pipelineState->stencilFrontOps.depthFailOp,
+                .depthStencilPassOp = StencilOp::incrWrap,
                 .compareOp = pipelineState->stencilFrontOps.compareOp,
             };
             pipelineState->stencilDoubleSided = true;
@@ -1384,9 +1451,10 @@ static void get_stencil_settings(InterlockMode interlockMode,
             pipelineState->stencilWriteMask = isClipUpdate ? 0xff : 0x1;
             pipelineState->stencilReference = 0x80;
             pipelineState->stencilFrontOps = {
-                .failOp = StencilOp::keep,
-                .passOp = isClipUpdate ? StencilOp::replace : StencilOp::zero,
+                .stencilFailOp = StencilOp::keep,
                 .depthFailOp = StencilOp::keep,
+                .depthStencilPassOp =
+                    isClipUpdate ? StencilOp::replace : StencilOp::zero,
                 .compareOp = StencilCompareOp::notEqual,
             };
             pipelineState->stencilDoubleSided = false;
@@ -1410,9 +1478,9 @@ static void get_stencil_settings(InterlockMode interlockMode,
             pipelineState->stencilWriteMask = 0xff;
             pipelineState->stencilReference = 0x80;
             pipelineState->stencilFrontOps = {
-                .failOp = StencilOp::zero,
-                .passOp = StencilOp::replace,
+                .stencilFailOp = StencilOp::zero,
                 .depthFailOp = StencilOp::keep,
+                .depthStencilPassOp = StencilOp::replace,
                 .compareOp = StencilCompareOp::less,
             };
             pipelineState->stencilDoubleSided = false;
@@ -1424,9 +1492,9 @@ static void get_stencil_settings(InterlockMode interlockMode,
             pipelineState->stencilWriteMask = 0xff;
             pipelineState->stencilReference = 0x00;
             pipelineState->stencilFrontOps = {
-                .failOp = StencilOp::keep,
-                .passOp = StencilOp::zero,
+                .stencilFailOp = StencilOp::keep,
                 .depthFailOp = StencilOp::keep,
+                .depthStencilPassOp = StencilOp::zero,
                 .compareOp = StencilCompareOp::notEqual,
             };
             pipelineState->stencilDoubleSided = false;
@@ -1442,8 +1510,9 @@ CullFace get_cull_face(DrawType drawType)
         case DrawType::midpointFanCenterAAPatches:
         case DrawType::outerCurvePatches:
         case DrawType::interiorTriangulation:
-        case DrawType::atlasBlit:
+        case DrawType::featherAtlasBlit:
         case DrawType::msaaStrokes:
+        case DrawType::msaaDynamicMidpointFans:
         case DrawType::msaaMidpointFans:
         case DrawType::clipReset:
             return CullFace::counterclockwise;
@@ -1581,7 +1650,7 @@ bool get_color_write_enable(DrawType drawType,
         case DrawType::midpointFanCenterAAPatches:
         case DrawType::outerCurvePatches:
         case DrawType::interiorTriangulation:
-        case DrawType::atlasBlit:
+        case DrawType::featherAtlasBlit:
         case DrawType::imageRect:
         case DrawType::imageMesh:
         case DrawType::renderPassInitialize:
@@ -1605,6 +1674,7 @@ bool get_color_write_enable(DrawType drawType,
         case DrawType::msaaMidpointFanPathsStencil:
         case DrawType::clipReset:
             return false;
+        case DrawType::msaaDynamicMidpointFans:
         case DrawType::msaaMidpointFans:
         case DrawType::msaaMidpointFanPathsCover:
             return !enums::is_flag_set(drawContents, DrawContents::clipUpdate);
@@ -1727,7 +1797,7 @@ PipelineState get_pipeline_state(DrawType drawType,
     // Ensure drawType is compatible with the interlock mode.
     switch (drawType)
     {
-        case DrawType::atlasBlit:
+        case DrawType::featherAtlasBlit:
         case DrawType::imageMesh:
             break;
 
@@ -1752,6 +1822,7 @@ PipelineState get_pipeline_state(DrawType drawType,
             break;
 
         case DrawType::msaaStrokes:
+        case DrawType::msaaDynamicMidpointFans:
         case DrawType::msaaMidpointFans:
         case DrawType::msaaMidpointFanBorrowedCoverage:
         case DrawType::msaaMidpointFanStencilReset:
@@ -1844,7 +1915,7 @@ static float eval_normal_distribution(float x, float mu, float inverseSigma)
 
 void generate_gausian_integral_table(float (&table)[GAUSSIAN_TABLE_SIZE])
 {
-    float sigma = GAUSSIAN_TABLE_SIZE / (FEATHER_TEXTURE_STDDEVS * 2);
+    float sigma = GAUSSIAN_TABLE_SIZE / (GAUSSIAN_INTEGRAL_TEXTURE_STDDEVS * 2);
     float inverseSigma = 1 / sigma;
     float mu = GAUSSIAN_TABLE_SIZE * .5f;
     float integral = 0;
@@ -1982,13 +2053,14 @@ void generate_inverse_gausian_integral_table(
 {
     // Evaluate 32 samples for every table value, for better precision.
     size_t MULTIPLIER = 32;
-    float sigma = GAUSSIAN_TABLE_SIZE / (FEATHER_TEXTURE_STDDEVS * 2);
+    float sigma = GAUSSIAN_TABLE_SIZE / (GAUSSIAN_INTEGRAL_TEXTURE_STDDEVS * 2);
     float inverseSigma = 1 / sigma;
     float mu = GAUSSIAN_TABLE_SIZE * .5f;
     size_t samples = GAUSSIAN_TABLE_SIZE * MULTIPLIER;
 
     // Integrate half the curve in order to determine the initial value of our
-    // integral (the table doesn't begin until -FEATHER_TEXTURE_STDDEVS).
+    // integral (the table doesn't begin until
+    // -GAUSSIAN_INTEGRAL_TEXTURE_STDDEVS).
     float integral = 0;
     for (size_t i = 0; i < (samples + 1) / 2; ++i)
     {

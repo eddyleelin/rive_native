@@ -1,3 +1,6 @@
+@TestOn('!browser')
+library; // asserts lazy init; the web harness pre-initializes in flutter_test_config
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rive_native/rive_native.dart' as rive;
 

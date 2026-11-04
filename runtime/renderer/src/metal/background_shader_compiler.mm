@@ -6,7 +6,6 @@
 
 #include "generated/shaders/metal.glsl.hpp"
 #include "generated/shaders/constants.glsl.hpp"
-#include "generated/shaders/image_draw_uniforms.glsl.hpp"
 #include "generated/shaders/flush_uniforms.glsl.hpp"
 #include "generated/shaders/common.glsl.hpp"
 #include "generated/shaders/advanced_blend.glsl.hpp"
@@ -138,10 +137,6 @@ void BackgroundShaderCompiler::threadMain()
                              gpu::glsl::constants,
                              gpu::glsl::flush_uniforms,
                              gpu::glsl::common];
-        if (drawType == DrawType::imageRect || drawType == DrawType::imageMesh)
-        {
-            [source appendFormat:@"%s\n", gpu::glsl::image_draw_uniforms];
-        }
         if (enums::is_flag_set(shaderFeatures,
                                ShaderFeatures::ENABLE_ADVANCED_BLEND))
         {
@@ -160,8 +155,8 @@ void BackgroundShaderCompiler::threadMain()
             case DrawType::interiorTriangulation:
                 defines[@GLSL_DRAW_INTERIOR_TRIANGLES] = @"";
                 break;
-            case DrawType::atlasBlit:
-                defines[@GLSL_ATLAS_BLIT] = @"1";
+            case DrawType::featherAtlasBlit:
+                defines[@GLSL_FEATHER_ATLAS_BLIT] = @"1";
                 break;
             case DrawType::imageRect:
 #ifdef RIVE_IOS
@@ -221,6 +216,7 @@ void BackgroundShaderCompiler::threadMain()
                 break;
             case DrawType::msaaStrokes:
             case DrawType::msaaMidpointFanBorrowedCoverage:
+            case DrawType::msaaDynamicMidpointFans:
             case DrawType::msaaMidpointFans:
             case DrawType::msaaMidpointFanStencilReset:
             case DrawType::msaaMidpointFanPathsStencil:
@@ -252,7 +248,7 @@ void BackgroundShaderCompiler::threadMain()
                         appendFormat:@"%s\n",
                                      gpu::glsl::draw_raster_order_path_frag];
                     break;
-                case DrawType::atlasBlit:
+                case DrawType::featherAtlasBlit:
                     [source appendFormat:@"%s\n", gpu::glsl::draw_path_common];
                     [source appendFormat:@"%s\n", gpu::glsl::draw_path_vert];
                     [source appendFormat:@"%s\n", gpu::glsl::draw_mesh_frag];
@@ -265,6 +261,7 @@ void BackgroundShaderCompiler::threadMain()
                 case DrawType::imageRect:
                 case DrawType::msaaStrokes:
                 case DrawType::msaaMidpointFanBorrowedCoverage:
+                case DrawType::msaaDynamicMidpointFans:
                 case DrawType::msaaMidpointFans:
                 case DrawType::msaaMidpointFanStencilReset:
                 case DrawType::msaaMidpointFanPathsStencil:

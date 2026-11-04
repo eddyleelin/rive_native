@@ -54,6 +54,14 @@ late js.JSFunction _yogaStyleGetMinDimension;
 late js.JSFunction _yogaStyleSetMinDimension;
 late js.JSFunction _yogaStyleGetMaxDimension;
 late js.JSFunction _yogaStyleSetMaxDimension;
+late js.JSFunction _yogaStyleSetGridTrackCount;
+late js.JSFunction _yogaStyleSetGridTrack;
+late js.JSFunction _yogaStyleSetGridTrackMinMax;
+late js.JSFunction _yogaStyleSetGridLine;
+late js.JSFunction _yogaStyleGetJustifyItems;
+late js.JSFunction _yogaStyleSetJustifyItems;
+late js.JSFunction _yogaStyleGetJustifySelf;
+late js.JSFunction _yogaStyleSetJustifySelf;
 late js.JSFunction _makeYogaNode;
 late js.JSFunction _disposeYogaNode;
 late js.JSFunction _yogaNodeCalculateLayout;
@@ -142,6 +150,20 @@ class LayoutEngineWasm {
         module['yogaStyleGetMaxDimension'] as js.JSFunction;
     _yogaStyleSetMaxDimension =
         module['_yogaStyleSetMaxDimension'] as js.JSFunction;
+    _yogaStyleSetGridTrackCount =
+        module['_yogaStyleSetGridTrackCount'] as js.JSFunction;
+    _yogaStyleSetGridTrack = module['_yogaStyleSetGridTrack'] as js.JSFunction;
+    _yogaStyleSetGridTrackMinMax =
+        module['_yogaStyleSetGridTrackMinMax'] as js.JSFunction;
+    _yogaStyleSetGridLine = module['_yogaStyleSetGridLine'] as js.JSFunction;
+    _yogaStyleGetJustifyItems =
+        module['_yogaStyleGetJustifyItems'] as js.JSFunction;
+    _yogaStyleSetJustifyItems =
+        module['_yogaStyleSetJustifyItems'] as js.JSFunction;
+    _yogaStyleGetJustifySelf =
+        module['_yogaStyleGetJustifySelf'] as js.JSFunction;
+    _yogaStyleSetJustifySelf =
+        module['_yogaStyleSetJustifySelf'] as js.JSFunction;
     _makeYogaNode = module['_makeYogaNode'] as js.JSFunction;
     _disposeYogaNode = module['disposeYogaNode'] as js.JSFunction;
     _yogaNodeCalculateLayout =
@@ -532,6 +554,62 @@ class LayoutStyleWasm extends LayoutStyle {
         value.value.toJS,
         value.unit.index.toJS,
       );
+
+  @override
+  LayoutJustify get justifyItems => LayoutJustify.values[
+      (_yogaStyleGetJustifyItems.callAsFunction(null, _nativePtr.toJS)
+              as js.JSNumber)
+          .toDartInt];
+
+  @override
+  set justifyItems(LayoutJustify value) => _yogaStyleSetJustifyItems
+      .callAsFunction(null, _nativePtr.toJS, value.index.toJS);
+
+  @override
+  LayoutJustify get justifySelf => LayoutJustify.values[
+      (_yogaStyleGetJustifySelf.callAsFunction(null, _nativePtr.toJS)
+              as js.JSNumber)
+          .toDartInt];
+
+  @override
+  set justifySelf(LayoutJustify value) => _yogaStyleSetJustifySelf
+      .callAsFunction(null, _nativePtr.toJS, value.index.toJS);
+
+  @override
+  void setGridTracks(
+      LayoutGridCollection collection, List<LayoutGridTrack> tracks) {
+    _yogaStyleSetGridTrackCount.callAsFunction(
+        null, _nativePtr.toJS, collection.index.toJS, tracks.length.toJS);
+    for (var i = 0; i < tracks.length; i++) {
+      final track = tracks[i];
+      if (track.type == LayoutGridTrackType.minmax) {
+        _yogaStyleSetGridTrackMinMax.callMethodVarArgs('call'.toJS, [
+          null,
+          _nativePtr.toJS,
+          collection.index.toJS,
+          i.toJS,
+          track.minType.index.toJS,
+          track.value.toJS,
+          track.maxType.index.toJS,
+          track.maxValue.toJS,
+        ]);
+      } else {
+        _yogaStyleSetGridTrack.callMethodVarArgs('call'.toJS, [
+          null,
+          _nativePtr.toJS,
+          collection.index.toJS,
+          i.toJS,
+          track.type.index.toJS,
+          track.value.toJS,
+        ]);
+      }
+    }
+  }
+
+  @override
+  void setGridLine(LayoutGridLinePosition position, LayoutGridLine line) =>
+      _yogaStyleSetGridLine.callAsFunction(null, _nativePtr.toJS,
+          position.index.toJS, line.type.index.toJS, line.value.toJS);
 }
 
 class LayoutNodeWasm extends LayoutNode {
@@ -630,6 +708,14 @@ class LayoutNodeWasm extends LayoutNode {
       (data['height'] as js.JSNumber).toDartDouble,
     );
   }
+
+  // Grid line offsets are not surfaced to the web/WASM binding — grid drag
+  // tooling that reads them is desktop-only.
+  @override
+  List<double> get gridColumnLineOffsets => const [];
+
+  @override
+  List<double> get gridRowLineOffsets => const [];
 
   @override
   void clearChildren() => _yogaNodeClearChildren.callAsFunction(

@@ -27,6 +27,20 @@ dofile(packages .. '/runtime/premake5_v2.lua')
 dofile(packages .. '/runtime/renderer/premake5_pls_renderer.lua')
 
 if not _OPTIONS['flutter_runtime'] then
+    -- Edit-time boolean path operations (editor-only; never shipped in the
+    -- flutter runtime).
+    dofile(packages .. '/pathops/premake5.lua')
+else
+    -- Dummy so the podspec's unconditional -lrive_pathops link resolves in
+    -- flutter_runtime builds (same pattern as luau/spirv_cross/rust_ffi).
+    project('rive_pathops')
+    do
+        kind('StaticLib')
+        files({ 'dummy.cpp' })
+    end
+end
+
+if not _OPTIONS['flutter_runtime'] then
     local scripting =
         require(path.getabsolute(packages) .. '/scripting_workspace/premake5_scripting_workspace')
     luau = scripting.luau
@@ -136,6 +150,7 @@ do
                     'spirv_cross',
                     'rust_ffi',
                     'brotli',
+                    'rive_pathops',
                 })
             end
             filter({})
@@ -144,7 +159,7 @@ do
             kind('StaticLib')
             filter({ 'options:not flutter_runtime' })
             do
-                dependson({ 'spirv_cross' })
+                dependson({ 'spirv_cross', 'rive_pathops' })
             end
             filter({})
         end
@@ -184,6 +199,7 @@ do
                 'spirv_cross',
                 'rust_ffi',
                 'brotli',
+                'rive_pathops',
             })
         end
         filter({})
@@ -252,6 +268,10 @@ do
         files({
             'src/rive_luau_binding.cpp',
             'src/rive_luau_binding_gpu.cpp',
+            'src/pathops_binding.cpp',
+        })
+        includedirs({
+            packages .. '/pathops/include',
         })
     end
     filter({})

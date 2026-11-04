@@ -35,6 +35,12 @@ late js.JSFunction _nativeFontBytes;
 late js.JSFunction _freeNativeFont;
 late js.JSFunction _scriptingWorkspaceRequestVM;
 late js.JSFunction _setScriptSourceWithType;
+late js.JSFunction _setScriptSourceScoped;
+late js.JSFunction _setScriptScope;
+late js.JSFunction _setLibraryImport;
+late js.JSFunction _removeLibraryImport;
+late js.JSFunction _setLibraryCanonicalName;
+late js.JSFunction _rewriteRequires;
 late js.JSFunction _scriptingWorkspaceBuiltinDefinitions;
 late js.JSFunction _scriptingWorkspaceBuiltinDefinitionKeys;
 late js.JSFunction _scriptingWorkspaceBuiltinDefinition;
@@ -86,6 +92,18 @@ class ScriptingWorkspaceWasm extends ScriptingWorkspace {
         module['scriptingWorkspaceRequestGetDefinition'] as js.JSFunction;
     _setScriptSourceWithType =
         module['scriptingWorkspaceSetScriptSourceWithType'] as js.JSFunction;
+    _setScriptSourceScoped =
+        module['scriptingWorkspaceSetScriptSourceScoped'] as js.JSFunction;
+    _setScriptScope =
+        module['scriptingWorkspaceSetScriptScope'] as js.JSFunction;
+    _setLibraryImport =
+        module['scriptingWorkspaceSetLibraryImport'] as js.JSFunction;
+    _removeLibraryImport =
+        module['scriptingWorkspaceRemoveLibraryImport'] as js.JSFunction;
+    _setLibraryCanonicalName =
+        module['scriptingWorkspaceSetLibraryCanonicalName'] as js.JSFunction;
+    _rewriteRequires =
+        module['scriptingWorkspaceRewriteRequires'] as js.JSFunction;
     _scriptingWorkspaceBuiltinDefinitions =
         module['_scriptingWorkspaceBuiltinDefinitions'] as js.JSFunction;
     _scriptingWorkspaceBuiltinDefinitionKeys =
@@ -315,18 +333,32 @@ class ScriptingWorkspaceWasm extends ScriptingWorkspace {
     String scriptName,
     String source, {
     bool highlight = false,
+    int libraryId = 0,
+    int libraryVersionId = 0,
   }) async {
-    final workId =
-        (_setScriptSource.callAsFunctionEx(
-                  null,
-                  _nativePtr.toJS,
-                  scriptId.toJS,
-                  scriptName.toJS,
-                  source.toJS,
-                  highlight.toJS,
-                )
-                as js.JSNumber)
-            .toDartInt;
+    final workId = libraryId == 0 && libraryVersionId == 0
+        ? (_setScriptSource.callAsFunctionEx(
+                    null,
+                    _nativePtr.toJS,
+                    scriptId.toJS,
+                    scriptName.toJS,
+                    source.toJS,
+                    highlight.toJS,
+                  )
+                  as js.JSNumber)
+              .toDartInt
+        : (_setScriptSourceScoped.callAsFunctionEx(
+                    null,
+                    _nativePtr.toJS,
+                    scriptId.toJS,
+                    scriptName.toJS,
+                    source.toJS,
+                    libraryId.toJS,
+                    libraryVersionId.toJS,
+                    highlight.toJS,
+                  )
+                  as js.JSNumber)
+              .toDartInt;
     if (!highlight) {
       // Still register the completer so the native response gets consumed,
       // but don't await it — just return the default result immediately.
@@ -334,6 +366,82 @@ class ScriptingWorkspaceWasm extends ScriptingWorkspace {
       return HighlightResult(HighlightResultType.unknown);
     }
 
+    return registerCompleter(workId);
+  }
+
+  @override
+  void setScriptScope(String scriptId, int libraryId, int libraryVersionId) {
+    _setScriptScope.callAsFunctionEx(
+      null,
+      _nativePtr.toJS,
+      scriptId.toJS,
+      libraryId.toJS,
+      libraryVersionId.toJS,
+    );
+  }
+
+  @override
+  void setLibraryImport(
+    int callerLibraryId,
+    int callerLibraryVersionId,
+    String name,
+    int targetLibraryId,
+    int targetLibraryVersionId,
+  ) {
+    _setLibraryImport.callAsFunctionEx(
+      null,
+      _nativePtr.toJS,
+      callerLibraryId.toJS,
+      callerLibraryVersionId.toJS,
+      name.toJS,
+      targetLibraryId.toJS,
+      targetLibraryVersionId.toJS,
+    );
+  }
+
+  @override
+  void removeLibraryImport(
+    int callerLibraryId,
+    int callerLibraryVersionId,
+    String name,
+  ) {
+    _removeLibraryImport.callAsFunctionEx(
+      null,
+      _nativePtr.toJS,
+      callerLibraryId.toJS,
+      callerLibraryVersionId.toJS,
+      name.toJS,
+    );
+  }
+
+  @override
+  void setLibraryCanonicalName(
+    int libraryId,
+    int libraryVersionId,
+    String canonicalName,
+  ) {
+    _setLibraryCanonicalName.callAsFunctionEx(
+      null,
+      _nativePtr.toJS,
+      libraryId.toJS,
+      libraryVersionId.toJS,
+      canonicalName.toJS,
+    );
+  }
+
+  @override
+  Future<String> rewriteRequires(String scriptId) async {
+    if (isClosing) {
+      return '';
+    }
+    final workId =
+        (_rewriteRequires.callAsFunctionEx(
+                  null,
+                  _nativePtr.toJS,
+                  scriptId.toJS,
+                )
+                as js.JSNumber)
+            .toDartInt;
     return registerCompleter(workId);
   }
 

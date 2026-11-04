@@ -245,10 +245,10 @@
 #define TEXTURE_SAMPLE_DYNAMIC_LODBIAS(TEXTURE, SAMPLER_NAME, COORD, LODBIAS)  \
     TEXTURE_SAMPLE_LODBIAS(TEXTURE, SAMPLER_NAME, COORD, LODBIAS)
 
-// Polyfill the feather texture as a sampler2D since ES doesn't support
-// sampler1DArray. This is why the macro needs "ARRAY_INDEX_NORMALIZED": when
-// polyfilled as a 2D texture, the "array index" needs to be a 0..1 normalized
-// y coordinate instead of the literal array index.
+// Polyfill the gaussian integral texture as a sampler2D since ES doesn't
+// support sampler1DArray. This is why the macro needs "ARRAY_INDEX_NORMALIZED":
+// when polyfilled as a 2D texture, the "array index" needs to be a 0..1
+// normalized y coordinate instead of the literal array index.
 #define TEXTURE_R16F_1D_ARRAY(SET, IDX, NAME) TEXTURE_R16F(SET, IDX, NAME)
 // clang-format off
 // Clang formatting on this line trips up the Qualcomm compiler.
@@ -502,10 +502,6 @@
 #define PLS_FRAG_COLOR_MAIN(NAME)                                              \
     layout(location = 0, rgba8) out half4 _fragColor;                          \
     PLS_MAIN(NAME)
-
-#define PLS_FRAG_COLOR_MAIN_WITH_IMAGE_UNIFORMS(NAME)                          \
-    layout(location = 0, rgba8) out half4 _fragColor;                          \
-    PLS_MAIN(NAME)
 #endif
 #endif
 
@@ -634,10 +630,10 @@
         int _vertexID = gl_VertexID;                                           \
         int _instanceID = INSTANCE_INDEX;
 
-#define IMAGE_RECT_VERTEX_MAIN VERTEX_MAIN
-
 // clang-format off
-#define IMAGE_MESH_VERTEX_MAIN(NAME, PositionAttr, position, UVAttr, uv, _vertexID) \
+#define IMAGE_RECT_VERTEX_MAIN(NAME, Attrs, attrs, ImageDrawAttrs, imageDrawAttrs, _vertexID, _instanceID)                                    \
+    VERTEX_MAIN(NAME, Attrs, attrs, _vertexID, _instanceID)
+#define IMAGE_MESH_VERTEX_MAIN(NAME, PositionAttr, position, UVAttr, uv, ImageDrawAttrs,  imageDrawAttrs, _vertexID)                                      \
     VERTEX_MAIN(NAME, PositionAttr, position, _vertexID, _instanceID)
 // clang-format on
 
@@ -686,16 +682,8 @@
     PLS_STOREUI(PLANE, VALUE);
 #endif
 
-#define PLS_MAIN_WITH_IMAGE_UNIFORMS(NAME) PLS_MAIN(NAME)
-
 #ifndef PLS_FRAG_COLOR_MAIN
 #define PLS_FRAG_COLOR_MAIN(NAME)                                              \
-    layout(location = 0) out half4 _fragColor;                                 \
-    PLS_MAIN(NAME)
-#endif
-
-#ifndef PLS_FRAG_COLOR_MAIN_WITH_IMAGE_UNIFORMS
-#define PLS_FRAG_COLOR_MAIN_WITH_IMAGE_UNIFORMS(NAME)                          \
     layout(location = 0) out half4 _fragColor;                                 \
     PLS_MAIN(NAME)
 #endif

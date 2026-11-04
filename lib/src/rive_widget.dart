@@ -269,9 +269,14 @@ class RiveArtboardWidget extends StatefulWidget {
   final Artboard artboard;
   final ArtboardPainter painter;
 
+  /// How the backing texture is sized when rendering with `Factory.rive`.
+  /// Ignored with `Factory.flutter` (content paints at composite resolution).
+  final RenderResolution renderResolution;
+
   const RiveArtboardWidget({
     required this.artboard,
     required this.painter,
+    this.renderResolution = RenderResolution.defaultValue,
     super.key,
   });
 
@@ -299,7 +304,10 @@ class _RiveArtboardWidgetState extends State<RiveArtboardWidget> {
     if (widget.artboard.riveFactory == Factory.flutter) {
       return FlutterRiveRendererWidget(painter: widget.painter);
     }
-    return ArtboardWidgetRiveRenderer(painter: widget.painter);
+    return ArtboardWidgetRiveRenderer(
+      painter: widget.painter,
+      renderResolution: widget.renderResolution,
+    );
   }
 }
 
@@ -456,9 +464,14 @@ class RiveProceduralRenderingWidget extends StatefulWidget {
   final Factory riveFactory;
   final ProceduralPainter painter;
 
+  /// How the backing texture is sized when rendering with `Factory.rive`.
+  /// Ignored with `Factory.flutter` (content paints at composite resolution).
+  final RenderResolution renderResolution;
+
   const RiveProceduralRenderingWidget({
     required this.riveFactory,
     required this.painter,
+    this.renderResolution = RenderResolution.defaultValue,
     super.key,
   });
 
@@ -476,7 +489,10 @@ class _RiveRiveProceduralRenderingWidgetState
       return FlutterRiveRendererWidget(painter: widget.painter);
     } else {
       // Render the artboard with the Rive Renderer.
-      return ArtboardWidgetRiveRenderer(painter: widget.painter);
+      return ArtboardWidgetRiveRenderer(
+        painter: widget.painter,
+        renderResolution: widget.renderResolution,
+      );
     }
   }
 }
@@ -484,7 +500,14 @@ class _RiveRiveProceduralRenderingWidgetState
 class ArtboardWidgetRiveRenderer extends StatefulWidget {
   final ProceduralPainter? painter;
 
-  const ArtboardWidgetRiveRenderer({super.key, this.painter});
+  /// How the backing texture is sized. See [RenderResolution].
+  final RenderResolution renderResolution;
+
+  const ArtboardWidgetRiveRenderer({
+    super.key,
+    this.painter,
+    this.renderResolution = RenderResolution.defaultValue,
+  });
 
   @override
   State<ArtboardWidgetRiveRenderer> createState() =>
@@ -597,7 +620,10 @@ class _ArtboardWidgetRiveRendererState
 
   @override
   Widget build(BuildContext context) {
-    return renderTexture.widget(painter: _painter);
+    return renderTexture.widget(
+      painter: _painter,
+      resolution: widget.renderResolution,
+    );
   }
 }
 
@@ -1178,10 +1204,94 @@ abstract class RiveNativeRenderBox extends RiveRenderBox<RenderTexturePainter> {
     }
   }
 
+  /// Cap on the *logical* extent (layout × scale, before the device pixel
+  /// ratio multiplies in) that [targetTextureSize] allocates for, applied
+  /// uniformly so sampling stays isotropic. Bounds runaway allocations under
+  /// large ancestor scales (e.g. zoom transitions). Applies to display and
+  /// layout; [RenderResolution.fixed] is taken as-is.
+  static double maxTextureLogicalSize = 4096;
+
+  RenderResolution _renderResolution = RenderResolution.defaultValue;
+  RenderResolution get renderResolution => _renderResolution;
+  set renderResolution(RenderResolution value) {
+    if (_renderResolution == value) {
+      return;
+    }
+    _renderResolution = value;
+    // Any cached ancestor scale belongs to the display policy; reset so
+    // switching away stops using it and switching back remeasures.
+    desiredTransformWidthScale = 1;
+    desiredTransformHeightScale = 1;
+    markNeedsLayout();
+  }
+
   double desiredTransformWidthScale = 1;
   double desiredTransformHeightScale = 1;
-  double get scaleWidth => devicePixelRatio * desiredTransformWidthScale;
-  double get scaleHeight => devicePixelRatio * desiredTransformHeightScale;
+
+  /// Fallback pixel scales used while the texture's actual size is not yet
+  /// available (see [RenderTexture.actualScale]).
+  double get scaleWidth => _fallbackScales.$1;
+  double get scaleHeight => _fallbackScales.$2;
+
+  (double, double) get _fallbackScales => switch (_renderResolution) {
+        DisplayRenderResolution() => (
+            devicePixelRatio * desiredTransformWidthScale,
+            devicePixelRatio * desiredTransformHeightScale,
+          ),
+        LayoutRenderResolution(:final scale) => (
+            devicePixelRatio * scale,
+            devicePixelRatio * scale,
+          ),
+        FixedRenderResolution(:final width, :final height) => (
+            hasSize && size.width > 0 ? width / size.width : devicePixelRatio,
+            hasSize && size.height > 0
+                ? height / size.height
+                : devicePixelRatio,
+          ),
+      };
+
+  /// The texture size (width, height) in physical pixels that the current
+  /// layout [size] and [renderResolution] call for.
+  (int, int) targetTextureSize() => switch (_renderResolution) {
+        FixedRenderResolution(:final width, :final height) => (width, height),
+        LayoutRenderResolution(:final scale) =>
+          _physicalFromLogical(size.width * scale, size.height * scale),
+        DisplayRenderResolution() => _physicalFromLogical(
+            size.width * desiredTransformWidthScale,
+            size.height * desiredTransformHeightScale,
+          ),
+      };
+
+  // Edge-triggered so the clamp is announced once per crossing, not on every
+  // layout while it stays engaged.
+  bool _loggedClampedAllocation = false;
+
+  (int, int) _physicalFromLogical(double logicalWidth, double logicalHeight) {
+    final longest = math.max(logicalWidth, logicalHeight);
+    final factor =
+        longest > maxTextureLogicalSize ? maxTextureLogicalSize / longest : 1.0;
+    assert(() {
+      if (factor == 1.0) {
+        _loggedClampedAllocation = false;
+      } else if (!_loggedClampedAllocation) {
+        _loggedClampedAllocation = true;
+        debugPrint(
+          'Rive texture allocation clamped: requested '
+          '${logicalWidth.round()}*${logicalHeight.round()} logical, capped '
+          'to ${(logicalWidth * factor).round()}*'
+          '${(logicalHeight * factor).round()} '
+          '(RiveNativeRenderBox.maxTextureLogicalSize = '
+          '$maxTextureLogicalSize).',
+        );
+      }
+      return true;
+    }());
+    return (
+      (logicalWidth * factor * devicePixelRatio).round(),
+      (logicalHeight * factor * devicePixelRatio).round(),
+    );
+  }
+
   bool _markNeedsLayoutCalled = false;
 
   @override
@@ -1190,25 +1300,69 @@ abstract class RiveNativeRenderBox extends RiveRenderBox<RenderTexturePainter> {
     super.markNeedsLayout();
   }
 
+  /// The cumulative scale (widthScale, heightScale) that ancestors apply to
+  /// [box] in the paint coordinate space, or `null` if it cannot be measured
+  /// safely because some [RenderBox] ancestor has not been laid out yet.
+  ///
+  /// During route / opacity transitions a repaint-boundary subtree can be
+  /// painted before an ancestor above it has been (re)laid out, so we first
+  /// check the whole chain and bail out (returning `null`) rather than letting
+  /// [getTransformTo] throw. See
+  /// https://github.com/rive-app/rive-flutter/issues/642.
+  @visibleForTesting
+  static (double, double)? ancestorPaintScale(RenderBox box) {
+    RenderObject? node = box.parent;
+    while (node != null) {
+      if (node is RenderBox && !node.hasSize) {
+        return null;
+      }
+      node = node.parent;
+    }
+    final transform = box.getTransformTo(null);
+    final m00 = transform.entry(0, 0);
+    final m10 = transform.entry(1, 0);
+    final m01 = transform.entry(0, 1);
+    final m11 = transform.entry(1, 1);
+    return (
+      math.sqrt(m00 * m00 + m10 * m10),
+      math.sqrt(m01 * m01 + m11 * m11),
+    );
+  }
+
   @override
   void paint(PaintingContext context, Offset offset) {
-    if (_markNeedsLayoutCalled) {
-      final currentTransformTo = getTransformTo(null);
-      final m00 = currentTransformTo.entry(0, 0);
-      final m10 = currentTransformTo.entry(1, 0);
-      final m01 = currentTransformTo.entry(0, 1);
-      final m11 = currentTransformTo.entry(1, 1);
-      final newWidthScale = math.sqrt(m00 * m00 + m10 * m10);
-      final newHeightScale = math.sqrt(m01 * m01 + m11 * m11);
-      if (newWidthScale != desiredTransformWidthScale ||
-          newHeightScale != desiredTransformHeightScale) {
-        SchedulerBinding.instance.addPostFrameCallback((_) {
-          markNeedsLayout();
-        });
-        desiredTransformWidthScale = newWidthScale;
-        desiredTransformHeightScale = newHeightScale;
-      }
+    // Only the display policy derives the texture size from the ancestor
+    // paint transform; the others size purely from layout, so skip the
+    // measurement (and its post-frame remeasure churn) entirely.
+    if (_markNeedsLayoutCalled &&
+        _renderResolution is! DisplayRenderResolution) {
       _markNeedsLayoutCalled = false;
+    }
+    if (_markNeedsLayoutCalled) {
+      void scheduleRemeasure() {
+        SchedulerBinding.instance.addPostFrameCallback((_) {
+          if (attached) {
+            markNeedsLayout();
+          }
+        });
+      }
+
+      final scale = ancestorPaintScale(this);
+      if (scale == null) {
+        // An ancestor is not laid out yet, so measuring the transform now would
+        // crash (see [ancestorPaintScale]). Leave _markNeedsLayoutCalled set and
+        // retry once it has a size.
+        scheduleRemeasure();
+      } else {
+        final (newWidthScale, newHeightScale) = scale;
+        if (newWidthScale != desiredTransformWidthScale ||
+            newHeightScale != desiredTransformHeightScale) {
+          scheduleRemeasure();
+          desiredTransformWidthScale = newWidthScale;
+          desiredTransformHeightScale = newHeightScale;
+        }
+        _markNeedsLayoutCalled = false;
+      }
     }
     super.paint(context, offset);
   }

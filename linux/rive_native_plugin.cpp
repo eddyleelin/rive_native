@@ -11,11 +11,59 @@
 #include <GL/gl.h>
 #include <GL/glext.h>
 #include <GL/glx.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 
 #include <cstring>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <sys/utsname.h>
+#include <vector>
+
+// Sibling textures created in Flutter's render_context (populate) can only be
+// deleted with that context current, which happens during populate. Removed
+// textures stash theirs here for the next populate to reap.
+static std::mutex g_orphan_shared_tex_mutex;
+static std::vector<uint32_t> g_orphan_shared_tex;
+
+// The pixel-buffer readback FBO lives in the render (FFI) GL context, which is
+// shared across textures and usually held current by the render thread — so it
+// can't be made current (and the FBO deleted) from the platform thread at
+// teardown. Removed textures stash it here for the next on_renderer_end (render
+// thread, FFI context current) to reap. Mirrors g_orphan_shared_tex above.
+static std::mutex g_orphan_readback_fbo_mutex;
+static std::vector<uint32_t> g_orphan_readback_fbo;
+
+// Since Flutter 3.38 the Linux shell renders in its own EGL context (not GDK's,
+// flutter/flutter#172330), so textures from gdk_window_create_gl_context() are
+// no longer in Flutter's share group and composite black (flutter#182998). We
+// bridge our rendered textures into Flutter's render_context with an EGLImage:
+// the renderer keeps drawing into its own context's textures, and populate()
+// (called with render_context current) binds a sibling texture to the same
+// image. Zero-copy, no shared GL group needed.
+typedef void(APIENTRYP RiveGLEGLImageTargetTexture2DOESPROC)(
+    GLenum target,
+    GLeglImageOES image);
+static PFNEGLCREATEIMAGEKHRPROC pEglCreateImageKHR = nullptr;
+static PFNEGLDESTROYIMAGEKHRPROC pEglDestroyImageKHR = nullptr;
+static RiveGLEGLImageTargetTexture2DOESPROC pGLEGLImageTargetTexture2DOES =
+    nullptr;
+
+static void rive_load_egl_image_procs()
+{
+    if (pEglCreateImageKHR != nullptr)
+    {
+        return;
+    }
+    pEglCreateImageKHR =
+        (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+    pEglDestroyImageKHR =
+        (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
+    pGLEGLImageTargetTexture2DOES =
+        (RiveGLEGLImageTargetTexture2DOESPROC)eglGetProcAddress(
+            "glEGLImageTargetTexture2DOES");
+}
 
 // Forward declarations for rive_native library functions.
 // These are implemented in rive_native_linux.cpp (linked from the static lib).
@@ -78,6 +126,11 @@ struct _RiveNativeGLTexture
     uint32_t gl_texture_ids[3];
     uint32_t width;
     uint32_t height;
+    // EGLImage bridge to Flutter's render_context (see the note up top).
+    EGLDisplay egl_display;
+    EGLImageKHR egl_images[3]; // siblings of gl_texture_ids, created in our ctx
+    uint32_t shared_tex[3];    // textures in render_context bound to egl_images
+    bool shared_ready;         // shared_tex created lazily in populate
 };
 
 G_DEFINE_TYPE(RiveNativeGLTexture,
@@ -93,8 +146,47 @@ static gboolean rive_native_gl_texture_populate(FlTextureGL* texture,
 {
     RiveNativeGLTexture* self = RIVE_NATIVE_GL_TEXTURE(texture);
 
+    // render_context is current here — the only place we can delete sibling
+    // textures left behind by removed textures.
+    {
+        std::lock_guard<std::mutex> lock(g_orphan_shared_tex_mutex);
+        if (!g_orphan_shared_tex.empty())
+        {
+            glDeleteTextures((GLsizei)g_orphan_shared_tex.size(),
+                             g_orphan_shared_tex.data());
+            g_orphan_shared_tex.clear();
+        }
+    }
+
+    // Lazily create sibling textures bound to our EGLImages so the names we
+    // return are valid where the engine binds them. Done once; the binding
+    // tracks the underlying storage thereafter. createTexture guarantees the
+    // images are all-or-nothing, but verify each to be safe.
+    bool have_all_images = pGLEGLImageTargetTexture2DOES != nullptr;
+    for (int i = 0; i < 3 && have_all_images; i++)
+    {
+        have_all_images = self->egl_images[i] != EGL_NO_IMAGE_KHR;
+    }
+    if (!self->shared_ready && have_all_images)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            glGenTextures(1, &self->shared_tex[i]);
+            glBindTexture(GL_TEXTURE_2D, self->shared_tex[i]);
+            pGLEGLImageTargetTexture2DOES(GL_TEXTURE_2D, self->egl_images[i]);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+        self->shared_ready = true;
+    }
+
     *target = GL_TEXTURE_2D;
-    *name = self->gl_texture_ids[self->ring->currentRead()];
+    *name = self->shared_ready
+                ? self->shared_tex[self->ring->currentRead()]
+                : self->gl_texture_ids[self->ring->currentRead()];
     *width = self->width;
     *height = self->height;
 
@@ -114,12 +206,122 @@ static void rive_native_gl_texture_init(RiveNativeGLTexture* self)
     self->gl_texture_ids[2] = 0;
     self->width = 0;
     self->height = 0;
+    self->egl_display = EGL_NO_DISPLAY;
+    for (int i = 0; i < 3; i++)
+    {
+        self->egl_images[i] = EGL_NO_IMAGE_KHR;
+        self->shared_tex[i] = 0;
+    }
+    self->shared_ready = false;
 }
 
 static RiveNativeGLTexture* rive_native_gl_texture_new(void)
 {
     return RIVE_NATIVE_GL_TEXTURE(
         g_object_new(rive_native_gl_texture_get_type(), nullptr));
+}
+
+// ============ RiveNativePixelBufferTexture - copy fallback =================
+// Used when the EGLImage bridge is unavailable (e.g. GDK handed us a GLX
+// context, common on X11). Returning a raw GL texture name there composites
+// black on Flutter >= 3.38 (the name isn't valid in Flutter's render_context).
+// Instead we read the rendered frame back to a CPU buffer on the render thread
+// and let Flutter upload it into a texture it owns. One GPU->CPU->GPU copy per
+// frame, but correct everywhere and fully supported by the embedder.
+
+G_DECLARE_FINAL_TYPE(RiveNativePixelBufferTexture,
+                     rive_native_pixel_buffer_texture,
+                     RIVE_NATIVE,
+                     PIXEL_BUFFER_TEXTURE,
+                     FlPixelBufferTexture)
+
+struct _RiveNativePixelBufferTexture
+{
+    FlPixelBufferTexture parent_instance;
+    GMutex mutex;
+    uint8_t* buffers[3]; // triple-buffered RGBA8 pixels, top-down
+    int ready_index;     // last fully-written buffer; -1 until first frame
+    uint32_t width;
+    uint32_t height;
+};
+
+G_DEFINE_TYPE(RiveNativePixelBufferTexture,
+              rive_native_pixel_buffer_texture,
+              fl_pixel_buffer_texture_get_type())
+
+static gboolean rive_native_pixel_buffer_texture_copy_pixels(
+    FlPixelBufferTexture* texture,
+    const uint8_t** out_buffer,
+    uint32_t* width,
+    uint32_t* height,
+    GError** error)
+{
+    RiveNativePixelBufferTexture* self =
+        RIVE_NATIVE_PIXEL_BUFFER_TEXTURE(texture);
+
+    g_mutex_lock(&self->mutex);
+    // Before the first rendered frame, hand back the zero-filled buffer 0 so
+    // the engine has something valid (transparent) to upload. The returned
+    // pointer must stay valid until the engine finishes uploading; triple
+    // buffering guarantees the render thread won't reuse this slot for two
+    // more frames, well past the engine's synchronous upload.
+    int idx = self->ready_index >= 0 ? self->ready_index : 0;
+    *out_buffer = self->buffers[idx];
+    g_mutex_unlock(&self->mutex);
+
+    *width = self->width;
+    *height = self->height;
+    return TRUE;
+}
+
+static void rive_native_pixel_buffer_texture_init(
+    RiveNativePixelBufferTexture* self)
+{
+    g_mutex_init(&self->mutex);
+    self->buffers[0] = nullptr;
+    self->buffers[1] = nullptr;
+    self->buffers[2] = nullptr;
+    self->ready_index = -1;
+    self->width = 0;
+    self->height = 0;
+}
+
+static void rive_native_pixel_buffer_texture_finalize(GObject* object)
+{
+    RiveNativePixelBufferTexture* self =
+        RIVE_NATIVE_PIXEL_BUFFER_TEXTURE(object);
+    for (int i = 0; i < 3; i++)
+    {
+        g_free(self->buffers[i]);
+        self->buffers[i] = nullptr;
+    }
+    g_mutex_clear(&self->mutex);
+    G_OBJECT_CLASS(rive_native_pixel_buffer_texture_parent_class)
+        ->finalize(object);
+}
+
+static void rive_native_pixel_buffer_texture_class_init(
+    RiveNativePixelBufferTextureClass* klass)
+{
+    FL_PIXEL_BUFFER_TEXTURE_CLASS(klass)->copy_pixels =
+        rive_native_pixel_buffer_texture_copy_pixels;
+    G_OBJECT_CLASS(klass)->finalize = rive_native_pixel_buffer_texture_finalize;
+}
+
+static RiveNativePixelBufferTexture* rive_native_pixel_buffer_texture_new(
+    uint32_t width,
+    uint32_t height)
+{
+    RiveNativePixelBufferTexture* self = RIVE_NATIVE_PIXEL_BUFFER_TEXTURE(
+        g_object_new(rive_native_pixel_buffer_texture_get_type(), nullptr));
+    self->width = width;
+    self->height = height;
+    size_t size = (size_t)width * (size_t)height * 4;
+    for (int i = 0; i < 3; i++)
+    {
+        self->buffers[i] = (uint8_t*)g_malloc0(size);
+    }
+    return self;
 }
 
 // ==================== Texture info struct ==================================
@@ -139,6 +341,11 @@ struct RiveNativeTextureInfo
     int64_t texture_id; // Flutter texture ID
     FlTextureRegistrar* texture_registrar;
     RiveNativeGLTexture* gl_texture;
+    // Set instead of gl_texture when the EGLImage bridge is unavailable; the
+    // renderer still draws into gl_texture_ids but we read them back to CPU.
+    RiveNativePixelBufferTexture* pixel_buffer_texture;
+    // FBO in the render (FFI) context used to read gl_texture_ids back to CPU.
+    uint32_t readback_fbo;
     GdkGLContext* shared_gl_context; // For making GL context current
 
     uint32_t gl_texture_ids[3]; // GL texture IDs
@@ -205,7 +412,74 @@ static void on_make_current(void* userData)
 static void on_renderer_end(void* userData)
 {
     auto* info = (RiveNativeTextureInfo*)userData;
-    if (info && info->texture_registrar && info->gl_texture)
+    if (!info)
+    {
+        return;
+    }
+
+    // Reap readback FBOs orphaned by removed textures. We're on the render
+    // thread with the FFI GL context current — the only place these FBOs (which
+    // live in that context) can be deleted — just as populate() reaps orphaned
+    // sibling textures with the render_context current.
+    {
+        std::lock_guard<std::mutex> lock(g_orphan_readback_fbo_mutex);
+        if (!g_orphan_readback_fbo.empty())
+        {
+            glDeleteFramebuffers((GLsizei)g_orphan_readback_fbo.size(),
+                                 g_orphan_readback_fbo.data());
+            g_orphan_readback_fbo.clear();
+        }
+    }
+
+    // Pixel-buffer fallback: read the just-rendered frame back to CPU here, on
+    // the render thread with our GL context current (Flutter's render_context
+    // can't see our textures). The ring already Y-flipped the texture to
+    // top-down, so glReadPixels yields a top-down buffer as
+    // FlPixelBufferTexture expects — no extra flip. FBOs aren't shared across
+    // contexts, so we use a readback FBO created lazily here in the render
+    // context.
+    if (info->pixel_buffer_texture)
+    {
+        RiveNativePixelBufferTexture* pb = info->pixel_buffer_texture;
+        int slot = (int)info->ring.currentRead();
+        uint8_t* dst = pb->buffers[slot];
+        if (dst)
+        {
+            if (info->readback_fbo == 0)
+            {
+                glGenFramebuffers(1, &info->readback_fbo);
+            }
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, info->readback_fbo);
+            glFramebufferTexture2D(GL_READ_FRAMEBUFFER,
+                                   GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_2D,
+                                   info->gl_texture_ids[slot],
+                                   0);
+            glReadBuffer(GL_COLOR_ATTACHMENT0);
+            glPixelStorei(GL_PACK_ALIGNMENT, 4);
+            glReadPixels(0,
+                         0,
+                         (GLsizei)info->width,
+                         (GLsizei)info->height,
+                         GL_RGBA,
+                         GL_UNSIGNED_BYTE,
+                         dst);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+
+            g_mutex_lock(&pb->mutex);
+            pb->ready_index = slot;
+            g_mutex_unlock(&pb->mutex);
+        }
+        if (info->texture_registrar)
+        {
+            fl_texture_registrar_mark_texture_frame_available(
+                info->texture_registrar,
+                FL_TEXTURE(pb));
+        }
+        return;
+    }
+
+    if (info->texture_registrar && info->gl_texture)
     {
         fl_texture_registrar_mark_texture_frame_available(
             info->texture_registrar,
@@ -348,6 +622,39 @@ static void destroy_gl_textures(uint32_t* texture_ids, uint32_t* fbo_ids)
     }
 }
 
+// Destroy the EGLImages wrapping a texture's ring. The sibling textures in
+// Flutter's render_context (shared_tex) can't be deleted here (that context
+// isn't current), so they're left for the engine to reap with render_context.
+static void destroy_egl_images(RiveNativeGLTexture* tex)
+{
+    if (tex == nullptr)
+    {
+        return;
+    }
+    if (tex->egl_display != EGL_NO_DISPLAY && pEglDestroyImageKHR != nullptr)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            if (tex->egl_images[i] != EGL_NO_IMAGE_KHR)
+            {
+                pEglDestroyImageKHR(tex->egl_display, tex->egl_images[i]);
+                tex->egl_images[i] = EGL_NO_IMAGE_KHR;
+            }
+        }
+    }
+    // The sibling textures live in render_context; hand them to the next
+    // populate to delete (only it has that context current).
+    std::lock_guard<std::mutex> lock(g_orphan_shared_tex_mutex);
+    for (int i = 0; i < 3; i++)
+    {
+        if (tex->shared_tex[i] != 0)
+        {
+            g_orphan_shared_tex.push_back(tex->shared_tex[i]);
+            tex->shared_tex[i] = 0;
+        }
+    }
+}
+
 // Handle method calls from Dart.
 static void rive_native_plugin_handle_method_call(RiveNativePlugin* self,
                                                   FlMethodCall* method_call)
@@ -407,6 +714,18 @@ static void rive_native_plugin_handle_method_call(RiveNativePlugin* self,
         int32_t width = (int32_t)fl_value_get_int(width_val);
         int32_t height = (int32_t)fl_value_get_int(height_val);
 
+        // Reject non-positive or oversized dimensions before we allocate
+        // anything. 16384 is a conservative GL_MAX_TEXTURE_SIZE floor.
+        if (width <= 0 || height <= 0 || width > 16384 || height > 16384)
+        {
+            response = FL_METHOD_RESPONSE(fl_method_error_response_new(
+                "INVALID_ARGS",
+                "createTexture width/height out of range",
+                nullptr));
+            fl_method_call_respond(method_call, response, nullptr);
+            return;
+        }
+
         // Make context current and create GL textures.
         rive_native_plugin_make_context_current(self);
 
@@ -429,19 +748,79 @@ static void rive_native_plugin_handle_method_call(RiveNativePlugin* self,
             return;
         }
 
-        // Create FlTextureGL and register with Flutter.
-        info->gl_texture = rive_native_gl_texture_new();
-        info->gl_texture->ring = &info->ring;
-        info->gl_texture->width = (uint32_t)width;
-        info->gl_texture->height = (uint32_t)height;
-        for (int i = 0; i < 3; i++)
+        // Decide how to present frames to Flutter. Preferred path: wrap each
+        // ring texture in an EGLImage and hand Flutter sibling textures in its
+        // own render_context (zero-copy). This needs an EGL context here; on a
+        // GLX context (common on X11) eglGetCurrentContext() is EGL_NO_CONTEXT,
+        // so we fall back to the pixel-buffer copy path instead of returning a
+        // texture name that would composite black on Flutter >= 3.38.
+        rive_load_egl_image_procs();
+        EGLDisplay dpy = eglGetCurrentDisplay();
+        EGLContext cur = eglGetCurrentContext();
+        bool egl_ready = false;
+        if (pEglCreateImageKHR != nullptr && pEglDestroyImageKHR != nullptr &&
+            pGLEGLImageTargetTexture2DOES != nullptr && dpy != EGL_NO_DISPLAY &&
+            cur != EGL_NO_CONTEXT)
         {
-            info->gl_texture->gl_texture_ids[i] = info->gl_texture_ids[i];
+            info->gl_texture = rive_native_gl_texture_new();
+            info->gl_texture->ring = &info->ring;
+            info->gl_texture->width = (uint32_t)width;
+            info->gl_texture->height = (uint32_t)height;
+            for (int i = 0; i < 3; i++)
+            {
+                info->gl_texture->gl_texture_ids[i] = info->gl_texture_ids[i];
+            }
+
+            info->gl_texture->egl_display = dpy;
+            bool all_ok = true;
+            for (int i = 0; i < 3; i++)
+            {
+                EGLint attribs[] = {EGL_GL_TEXTURE_LEVEL_KHR, 0, EGL_NONE};
+                info->gl_texture->egl_images[i] = pEglCreateImageKHR(
+                    dpy,
+                    cur,
+                    EGL_GL_TEXTURE_2D_KHR,
+                    (EGLClientBuffer)(uintptr_t)info->gl_texture_ids[i],
+                    attribs);
+                if (info->gl_texture->egl_images[i] == EGL_NO_IMAGE_KHR)
+                {
+                    g_warning("rive_native: eglCreateImageKHR[%d] failed: 0x%x",
+                              i,
+                              eglGetError());
+                    all_ok = false;
+                }
+            }
+            if (all_ok)
+            {
+                egl_ready = true;
+            }
+            else
+            {
+                // Partial set — drop the GL-texture path entirely and use the
+                // pixel-buffer fallback below.
+                destroy_egl_images(info->gl_texture);
+                g_object_unref(info->gl_texture);
+                info->gl_texture = nullptr;
+            }
+        }
+
+        FlTexture* fl_texture = nullptr;
+        if (egl_ready)
+        {
+            fl_texture = FL_TEXTURE(info->gl_texture);
+        }
+        else
+        {
+            g_message("rive_native: EGLImage unavailable - using pixel-buffer");
+            info->pixel_buffer_texture =
+                rive_native_pixel_buffer_texture_new((uint32_t)width,
+                                                     (uint32_t)height);
+            fl_texture = FL_TEXTURE(info->pixel_buffer_texture);
         }
 
         fl_texture_registrar_register_texture(info->texture_registrar,
-                                              FL_TEXTURE(info->gl_texture));
-        info->texture_id = fl_texture_get_id(FL_TEXTURE(info->gl_texture));
+                                              fl_texture);
+        info->texture_id = fl_texture_get_id(fl_texture);
 
         // Store the FFI GL context for the make-current callback.
         info->shared_gl_context = self->ffi_gl_context
@@ -542,10 +921,39 @@ static void rive_native_plugin_handle_method_call(RiveNativePlugin* self,
                 info->rive_renderer = nullptr;
             }
 
-            fl_texture_registrar_unregister_texture(
-                info->texture_registrar,
-                FL_TEXTURE(info->gl_texture));
-            g_object_unref(info->gl_texture);
+            FlTexture* fl_texture =
+                info->gl_texture ? FL_TEXTURE(info->gl_texture)
+                                 : (info->pixel_buffer_texture
+                                        ? FL_TEXTURE(info->pixel_buffer_texture)
+                                        : nullptr);
+            if (fl_texture)
+            {
+                fl_texture_registrar_unregister_texture(info->texture_registrar,
+                                                        fl_texture);
+            }
+
+            if (info->gl_texture)
+            {
+                destroy_egl_images(info->gl_texture);
+                g_object_unref(info->gl_texture);
+                info->gl_texture = nullptr;
+            }
+
+            // The readback FBO lives in the render (FFI) context, which the
+            // render thread usually holds current, so we can't make it current
+            // and delete it here. Stash it for the next on_renderer_end to
+            // reap.
+            if (info->readback_fbo != 0)
+            {
+                std::lock_guard<std::mutex> lock(g_orphan_readback_fbo_mutex);
+                g_orphan_readback_fbo.push_back(info->readback_fbo);
+                info->readback_fbo = 0;
+            }
+            if (info->pixel_buffer_texture)
+            {
+                g_object_unref(info->pixel_buffer_texture);
+                info->pixel_buffer_texture = nullptr;
+            }
 
             rive_native_plugin_make_context_current(self);
             destroy_gl_textures(info->gl_texture_ids, info->gl_fbos);
@@ -604,7 +1012,30 @@ static void rive_native_plugin_dispose(GObject* object)
                 fl_texture_registrar_unregister_texture(
                     info->texture_registrar,
                     FL_TEXTURE(info->gl_texture));
+                destroy_egl_images(info->gl_texture);
                 g_object_unref(info->gl_texture);
+                info->gl_texture = nullptr;
+            }
+            if (info->pixel_buffer_texture)
+            {
+                fl_texture_registrar_unregister_texture(
+                    info->texture_registrar,
+                    FL_TEXTURE(info->pixel_buffer_texture));
+                // Readback FBO lives in the render (FFI) context; stash it for
+                // reaping. On full dispose no more frames run to reap it, so
+                // the FFI context teardown at the end of dispose frees it with
+                // the context and we just clear the stash.
+                if (info->readback_fbo != 0)
+                {
+                    std::lock_guard<std::mutex> lock(
+                        g_orphan_readback_fbo_mutex);
+                    g_orphan_readback_fbo.push_back(info->readback_fbo);
+                    info->readback_fbo = 0;
+                }
+                g_object_unref(info->pixel_buffer_texture);
+                info->pixel_buffer_texture = nullptr;
+                // Restore the shared context for destroy_gl_textures below.
+                rive_native_plugin_make_context_current(self);
             }
             destroy_gl_textures(info->gl_texture_ids, info->gl_fbos);
         }
@@ -616,6 +1047,14 @@ static void rive_native_plugin_dispose(GObject* object)
     {
         destroyRiveRendererContext(self->rive_renderer_context);
         self->rive_renderer_context = nullptr;
+    }
+
+    // Any readback FBOs stashed above are freed when the FFI context they live
+    // in is destroyed just below; drop the now-stale names so they can't be
+    // deleted against a different context created by a future plugin instance.
+    {
+        std::lock_guard<std::mutex> lock(g_orphan_readback_fbo_mutex);
+        g_orphan_readback_fbo.clear();
     }
 
     if (self->ffi_gl_context)

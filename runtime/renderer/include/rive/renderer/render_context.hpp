@@ -17,7 +17,6 @@
 #include "rive/renderer/trivial_block_allocator.hpp"
 #include "rive/shapes/paint/color.hpp"
 #include <array>
-#include <optional>
 #include <unordered_map>
 
 class PushRetrofittedTrianglesGMDraw;
@@ -324,10 +323,10 @@ private:
 
     // Throttled width/height of the atlas texture. If drawing to a render
     // target larger than this, we may create a larger atlas anyway.
-    uint32_t atlasMaxSize() const
+    uint32_t featherAtlasMaxSize() const
     {
-        constexpr static uint32_t MAX_ATLAS_MAX_SIZE = 4096;
-        return std::min(platformFeatures().maxTextureSize, MAX_ATLAS_MAX_SIZE);
+        constexpr static uint32_t FeatherAtlasMaxSize = 4096;
+        return std::min(platformFeatures().maxTextureSize, FeatherAtlasMaxSize);
     }
 
     // Defines the exact size of each of our GPU resources. Computed during
@@ -358,7 +357,6 @@ private:
         }
 
         size_t flushUniformBufferCount = 0;
-        size_t imageDrawUniformBufferCount = 0;
         size_t pathBufferCount = 0;
         size_t paintBufferCount = 0;
         size_t paintAuxBufferCount = 0;
@@ -366,10 +364,11 @@ private:
         size_t gradSpanBufferCount = 0;
         size_t tessSpanBufferCount = 0;
         size_t triangleVertexBufferCount = 0;
+        size_t imageDrawInstanceBufferCount = 0;
         size_t gradTextureHeight = 0;
         size_t tessTextureHeight = 0;
-        size_t atlasTextureWidth = 0;
-        size_t atlasTextureHeight = 0;
+        size_t featherAtlasTextureWidth = 0;
+        size_t featherAtlasTextureHeight = 0;
         size_t plsTransientBackingWidth = 0;
         size_t plsTransientBackingHeight = 0;
         size_t plsTransientBackingPlaneCount = 0;
@@ -452,7 +451,7 @@ private:
     WriteOnlyMappedMemory<gpu::GradientSpan> m_gradSpanData;
     WriteOnlyMappedMemory<gpu::TessVertexSpan> m_tessSpanData;
     WriteOnlyMappedMemory<gpu::TriangleVertex> m_triangleVertexData;
-    WriteOnlyMappedMemory<gpu::ImageDrawUniforms> m_imageDrawUniformData;
+    WriteOnlyMappedMemory<gpu::ImageDrawInstance> m_imageDrawInstanceData;
 
     // Simple allocator for trivially-destructible data that needs to persist
     // until the current frame has completed. All memory in this allocator is
@@ -510,6 +509,10 @@ private:
         {
             return m_ctx->frameInterlockMode();
         }
+        const gpu::PlatformFeatures& platformFeatures() const
+        {
+            return m_ctx->platformFeatures();
+        }
 
         // Access this flush's gpu::FlushDescriptor (which is not valid until
         // layoutResources()). NOTE: Some fields in the FlushDescriptor
@@ -556,10 +559,7 @@ private:
             //
             // (Initialized with a maximally negative rectangle whose union with
             // any other rectangle will be equal to that same rectangle.)
-            AABBu16 readBounds = {std::numeric_limits<uint16_t>::max(),
-                                  std::numeric_limits<uint16_t>::max(),
-                                  std::numeric_limits<uint16_t>::min(),
-                                  std::numeric_limits<uint16_t>::min()};
+            AABBu16 readBounds = AABBu16::makeMaximallyNegative();
         };
 
         const ClipInfo& getClipInfo(uint32_t clipID)
@@ -620,8 +620,8 @@ private:
             uint32_t gradSpanPaddingCount = 0;
             uint32_t maxGradTextureHeight = 0;
             uint32_t maxTessTextureHeight = 0;
-            uint32_t maxAtlasWidth = 0;
-            uint32_t maxAtlasHeight = 0;
+            uint32_t maxFeatherAtlasWidth = 0;
+            uint32_t maxFeatherAtlasHeight = 0;
             uint32_t maxPLSTransientBackingPlaneCount = 0;
             size_t maxCoverageBufferLength = 0;
         };
@@ -639,20 +639,20 @@ private:
                                             gpu::ColorRampLocation*);
 
         // Allocates a rectangular region in the atlas for this draw to use, and
-        // registers a future callback to PathDraw::pushAtlasTessellation()
-        // where it will render its coverage data to this same region in the
-        // atlas.
+        // registers a future callback to
+        // PathDraw::pushFeatherAtlasTessellation() where it will render its
+        // coverage data to this same region in the atlas.
         //
         // Attempts to leave a border of "desiredPadding" pixels surrounding the
         // rectangular region, but the allocation may not be padded if the path
         // is up against an edge.
-        bool allocateAtlasDraw(PathDraw*,
-                               uint16_t drawWidth,
-                               uint16_t drawHeight,
-                               uint16_t desiredPadding,
-                               uint16_t* x,
-                               uint16_t* y,
-                               AABBu16* paddedRegion);
+        bool allocateFeatherAtlasDraw(PathDraw*,
+                                      uint16_t drawWidth,
+                                      uint16_t drawHeight,
+                                      uint16_t desiredPadding,
+                                      uint16_t* x,
+                                      uint16_t* y,
+                                      AABBu16* paddedRegion);
 
         // Reserves a range within the coverage buffer for a path to use in
         // clockwiseAtomic mode.
@@ -766,9 +766,9 @@ private:
             gpu::ShaderMiscFlags RIVE_DEBUG_CODE(, size_t* vertexCounter));
 
         // Pushes a screen-space rectangle to the draw list, whose pixel
-        // coverage is determined by the atlas region associated with the given
-        // pathID.
-        gpu::DrawBatch& pushAtlasBlit(PathDraw*, uint32_t pathID);
+        // coverage is determined by the feather atlas region associated with
+        // the given pathID.
+        gpu::DrawBatch& pushFeatherAtlasBlit(PathDraw*, uint32_t pathID);
 
         // Pushes an "imageRect" to the draw list.
         // This should only be used when we in atomic mode. Otherwise, images
@@ -882,10 +882,10 @@ private:
         uint32_t m_currentContourID;
 
         // Atlas for offscreen feathering.
-        std::unique_ptr<rive::RectanizerSkyline> m_atlasRectanizer;
-        uint32_t m_atlasMaxX = 0;
-        uint32_t m_atlasMaxY = 0;
-        std::vector<PathDraw*> m_pendingAtlasDraws;
+        std::unique_ptr<rive::RectanizerSkyline> m_featherAtlasRectanizer;
+        uint32_t m_featherAtlasMaxX = 0;
+        uint32_t m_featherAtlasMaxY = 0;
+        std::vector<PathDraw*> m_pendingFeatherAtlasDraws;
 
         // Total coverage allocated via allocateCoverageBufferRange().
         // (clockwiseAtomic mode only.)

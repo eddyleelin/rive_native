@@ -710,6 +710,15 @@ final void Function(Pointer<Void> rawText) _rawTextSelectWord = nativeLib
     .lookup<NativeFunction<Void Function(Pointer<Void>)>>('rawTextSelectWord')
     .asFunction();
 
+final bool Function(Pointer<Void> rawText) _rawTextHasSelection = nativeLib
+    .lookup<NativeFunction<Bool Function(Pointer<Void>)>>('rawTextHasSelection')
+    .asFunction();
+
+final void Function(Pointer<Void> rawText) _rawTextClearSelection = nativeLib
+    .lookup<NativeFunction<Void Function(Pointer<Void>)>>(
+        'rawTextClearSelection')
+    .asFunction();
+
 final void Function(Pointer<Void> rawText) _rawTextUndo = nativeLib
     .lookup<NativeFunction<Void Function(Pointer<Void>)>>('rawTextUndo')
     .asFunction();
@@ -1997,6 +2006,12 @@ final class FFIRawTextInput extends RawTextInput
 
   @override
   void selectWord() => _rawTextSelectWord(_pointer);
+
+  @override
+  bool get hasSelection => _rawTextHasSelection(_pointer);
+
+  @override
+  void clearSelection() => _rawTextClearSelection(_pointer);
 
   @override
   void undo() => _rawTextUndo(_pointer);

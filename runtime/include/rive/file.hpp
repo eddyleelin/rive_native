@@ -81,7 +81,9 @@ public:
     /// Major version number supported by the runtime.
     static const int majorVersion = 7;
     /// Minor version number supported by the runtime.
-    static const int minorVersion = 0;
+    /// 7.2: images in a layout apply their fit as a separate scale, leaving
+    /// the user-facing scaleX/scaleY free to be edited/animated on top.
+    static const int minorVersion = 2;
     /// deterministicMode sets a static seed for randomization and uses
     /// timestamps for scrolling.
     static bool deterministicMode;
@@ -177,7 +179,17 @@ public:
 
     size_t viewModelCount() const { return m_ViewModels.size(); }
     ViewModel* viewModel(std::string name);
-    ViewModel* viewModel(size_t index);
+    ViewModel* viewModel(size_t index) const;
+    /// @returns the file index (definition order) of the view model with the
+    /// given name — the slot key used for data-context slots — or the view
+    /// model count if no such view model exists.
+    uint32_t viewModelId(const std::string& name) const;
+    /// @returns the global view models (viewModelType == global), in file
+    /// reference order.
+    std::vector<ViewModel*> globalViewModels() const;
+    /// @returns the names of the global view models (viewModelType == global),
+    /// in file reference order.
+    std::vector<std::string> globalViewModelNames() const;
     ViewModelRuntime* defaultArtboardViewModel(Artboard* artboard) const;
     ViewModelRuntime* viewModelByIndex(size_t index) const;
     ViewModelRuntime* viewModelByName(std::string name) const;
@@ -262,8 +274,10 @@ private:
     std::unique_ptr<ArtboardInstance> instanceArtboard(Artboard* ab) const;
 
     /// The file's backboard. All Rive files have a single backboard
-    /// where the artboards live.
-    Backboard* m_backboard;
+    /// where the artboards live. Initialized to null so that a File which
+    /// is destroyed after a failed/partial import (before a Backboard object
+    /// has been read) does not `delete` an uninitialized pointer.
+    Backboard* m_backboard = nullptr;
 
     /// We just keep these alive for the life of this File
     std::vector<rcp<FileAsset>> m_fileAssets;

@@ -461,6 +461,21 @@ class WebRiveFile extends File {
     return r;
   }
 
+  @override
+  int? resolveViewModelInstanceAssetFontRuntimeIndex(int coreAddress) {
+    if (_pointer == 0 || coreAddress == 0) {
+      return null;
+    }
+    final r = (RiveWasm.viewModelInstanceAssetFontResolveRuntimeIndex
+                .callAsFunction(null, _pointer.toJS, coreAddress.toJS)
+            as js.JSNumber)
+        .toDartInt;
+    if (r < 0 || r == _uint32Max) {
+      return null;
+    }
+    return r;
+  }
+
   WebRiveFile(this._pointer, this.riveFactory) {
     _finalizer.attach(this, _pointer.toJS, detach: this);
     RiveWasm.initBindingCallbacks.callAsFunctionEx(
@@ -549,6 +564,59 @@ class WebRiveFile extends File {
     if (ptr == 0) {
       return null;
     }
+    return WebRiveDataContext(ptr);
+  }
+
+  @override
+  InternalDataContext? internalDataContextFromInstances(
+      List<int> viewModelIndices, List<int> instanceIndices) {
+    assert(viewModelIndices.length == instanceIndices.length);
+    final count = viewModelIndices.length;
+    if (count == 0) return null;
+    const int u32Size = 4;
+    final vmBuf = (RiveWasm.allocateBuffer
+            .callAsFunction(null, (count * u32Size).toJS) as js.JSNumber)
+        .toDartInt;
+    final instBuf = (RiveWasm.allocateBuffer
+            .callAsFunction(null, (count * u32Size).toJS) as js.JSNumber)
+        .toDartInt;
+    final vmView = RiveWasm.heapViewU32(vmBuf, count);
+    final instView = RiveWasm.heapViewU32(instBuf, count);
+    for (var i = 0; i < count; i++) {
+      vmView[i] = viewModelIndices[i];
+      instView[i] = instanceIndices[i];
+    }
+    final ptr = toPointer(RiveWasm.riveDataContextFromInstances
+        .callAsFunction(null, _pointer.toJS, vmBuf.toJS, instBuf.toJS,
+            count.toJS));
+    RiveWasm.deleteBuffer.callAsFunction(null, vmBuf.toJS);
+    RiveWasm.deleteBuffer.callAsFunction(null, instBuf.toJS);
+    if (ptr == 0) return null;
+    return WebRiveDataContext(ptr);
+  }
+
+  @override
+  InternalDataContext? internalDataContextFromNativeInstances(
+      List<InternalViewModelInstance> instances,
+      {InternalDataContext? parent}) {
+    if (instances.isEmpty) return null;
+    final count = instances.length;
+    const int ptrSize = 4; // WASM 32-bit pointers
+    final buf = (RiveWasm.allocateBuffer
+            .callAsFunction(null, (count * ptrSize).toJS) as js.JSNumber)
+        .toDartInt;
+    final view = RiveWasm.heapViewU32(buf, count);
+    for (var i = 0; i < count; i++) {
+      view[i] = (instances[i] as WebRiveInternalViewModelInstance).pointer;
+    }
+    final parentPtr = parent != null
+        ? (parent as WebRiveDataContext).pointer
+        : 0;
+    final ptr = toPointer(
+        RiveWasm.dataContextFromViewModelInstancePointers
+            .callAsFunction(null, buf.toJS, count.toJS, parentPtr.toJS));
+    RiveWasm.deleteBuffer.callAsFunction(null, buf.toJS);
+    if (ptr == 0) return null;
     return WebRiveDataContext(ptr);
   }
 
@@ -844,6 +912,16 @@ class WebViewModelInstanceRuntime
   }
 
   @override
+  ViewModelInstanceAssetFont? font(String path) {
+    var ptr =
+        _findPointerByPath(path, RiveWasm.vmiRuntimeGetAssetFontProperty);
+    if (ptr == 0) {
+      return null;
+    }
+    return WebViewModelInstanceAssetFontRuntime(ptr, _rootViewModelInstance);
+  }
+
+  @override
   ViewModelInstance? viewModel(String path) {
     var ptr = _findPointerByPath(path, RiveWasm.vmiRuntimeGetViewModelProperty);
     if (ptr == 0) {
@@ -1107,6 +1185,25 @@ class WebViewModelInstanceAssetImageRuntime
       null,
       _pointer.toJS,
       value?.pointer ?? 0.toJS,
+    );
+  }
+}
+
+class WebViewModelInstanceAssetFontRuntime
+    extends WebViewModelInstanceValueRuntime
+    implements ViewModelInstanceAssetFont {
+  WebViewModelInstanceAssetFontRuntime(
+    super._pointer,
+    super._rootViewModelInstance,
+  );
+
+  @override
+  set value(covariant FontWasm? value) {
+    _rootViewModelInstance.requestAdvance();
+    RiveWasm.setVMIAssetFontRuntimeValue.callAsFunction(
+      null,
+      _pointer.toJS,
+      value?.fontPtr.toJS ?? 0.toJS,
     );
   }
 }
@@ -1566,6 +1663,10 @@ class WebRiveArtboard extends Artboard {
       .callAsFunction(null, _pointer.toJS, value.toJS);
 
   @override
+  set hostOpacity(double value) => RiveWasm.riveArtboardSetHostOpacity
+      .callAsFunction(null, _pointer.toJS, value.toJS);
+
+  @override
   double get width =>
       (RiveWasm.riveArtboardGetWidth.callAsFunction(null, _pointer.toJS)
               as js.JSNumber)
@@ -1583,6 +1684,26 @@ class WebRiveArtboard extends Artboard {
 
   @override
   set height(double value) => RiveWasm.riveArtboardSetHeight
+      .callAsFunction(null, _pointer.toJS, value.toJS);
+
+  @override
+  double get originX =>
+      (RiveWasm.riveArtboardGetOriginX.callAsFunction(null, _pointer.toJS)
+              as js.JSNumber)
+          .toDartDouble;
+
+  @override
+  set originX(double value) => RiveWasm.riveArtboardSetOriginX
+      .callAsFunction(null, _pointer.toJS, value.toJS);
+
+  @override
+  double get originY =>
+      (RiveWasm.riveArtboardGetOriginY.callAsFunction(null, _pointer.toJS)
+              as js.JSNumber)
+          .toDartDouble;
+
+  @override
+  set originY(double value) => RiveWasm.riveArtboardSetOriginY
       .callAsFunction(null, _pointer.toJS, value.toJS);
 
   @override
@@ -3040,6 +3161,14 @@ class WebRiveDataContext extends InternalDataContext {
   }
 
   @override
+  InternalViewModelInstance? viewModelInstanceAt(int index) {
+    var ptr = toPointer(RiveWasm.dataContextViewModelInstanceAt
+        .callAsFunction(null, _pointer.toJS, index.toJS));
+    if (ptr == 0) return null;
+    return WebRiveInternalViewModelInstance(ptr);
+  }
+
+  @override
   void dispose() {
     if (_pointer == 0) {
       return;
@@ -3214,6 +3343,30 @@ class WebRiveInternalViewModelInstance extends InternalViewModelInstance {
       int index, String name, int propertyType) {
     var ptr = _propertyFromNameAndType(index, name, propertyType);
     return WebInternalViewModelInstanceArtboard(ptr);
+  }
+
+  @override
+  void pruneToProperties(List<int> keepPropertyIds) {
+    if (_pointer == 0) {
+      return;
+    }
+    final count = keepPropertyIds.length;
+    if (count == 0) {
+      RiveWasm.pruneViewModelInstanceToProperties
+          .callAsFunction(null, _pointer.toJS, 0.toJS, 0.toJS);
+      return;
+    }
+    const int u32Size = 4;
+    final buf = (RiveWasm.allocateBuffer
+            .callAsFunction(null, (count * u32Size).toJS) as js.JSNumber)
+        .toDartInt;
+    final view = RiveWasm.heapViewU32(buf, count);
+    for (var i = 0; i < count; i++) {
+      view[i] = keepPropertyIds[i];
+    }
+    RiveWasm.pruneViewModelInstanceToProperties
+        .callAsFunction(null, _pointer.toJS, buf.toJS, count.toJS);
+    RiveWasm.deleteBuffer.callAsFunction(null, buf.toJS);
   }
 
   @override

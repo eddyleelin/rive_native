@@ -21,4 +21,10 @@ enum EdgeBehavior {
       orElse: () => EdgeBehavior.parentScope,
     );
   }
+
+  String get uiStringKey => switch (this) {
+    EdgeBehavior.parentScope => 'parent_scope',
+    EdgeBehavior.closedLoop => 'closed_loop',
+    EdgeBehavior.stop => 'stop',
+  };
 }

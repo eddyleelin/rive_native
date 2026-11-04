@@ -14,6 +14,10 @@ enum LayoutAlign {
   baseline,
   spaceBetween,
   spaceAround,
+  // Grid backport values; appended to match the rive yoga fork.
+  start,
+  end,
+  spaceEvenly,
 }
 
 enum LayoutDirection {
@@ -45,9 +49,92 @@ enum LayoutGutter {
   all,
 }
 
+enum LayoutGridTrackType {
+  auto,
+  points,
+  percent,
+  fr,
+  minmax,
+}
+
+enum LayoutGridCollection {
+  templateColumns,
+  templateRows,
+  autoColumns,
+  autoRows,
+}
+
+enum LayoutGridLineType {
+  auto,
+  lineIndex,
+  span,
+}
+
+enum LayoutGridLinePosition {
+  columnStart,
+  columnEnd,
+  rowStart,
+  rowEnd,
+}
+
+/// A single entry of a grid track list (grid-template-rows/columns,
+/// grid-auto-rows/columns). For [LayoutGridTrackType.minmax] tracks, [minType]
+/// and [value] describe the min sizing function and [maxType]/[maxValue] the
+/// max sizing function.
+class LayoutGridTrack {
+  final LayoutGridTrackType type;
+  final double value;
+  final LayoutGridTrackType minType;
+  final LayoutGridTrackType maxType;
+  final double maxValue;
+
+  const LayoutGridTrack.points(this.value)
+      : type = LayoutGridTrackType.points,
+        minType = LayoutGridTrackType.auto,
+        maxType = LayoutGridTrackType.auto,
+        maxValue = 0;
+
+  const LayoutGridTrack.percent(this.value)
+      : type = LayoutGridTrackType.percent,
+        minType = LayoutGridTrackType.auto,
+        maxType = LayoutGridTrackType.auto,
+        maxValue = 0;
+
+  const LayoutGridTrack.fr(this.value)
+      : type = LayoutGridTrackType.fr,
+        minType = LayoutGridTrackType.auto,
+        maxType = LayoutGridTrackType.auto,
+        maxValue = 0;
+
+  const LayoutGridTrack.auto()
+      : type = LayoutGridTrackType.auto,
+        value = 0,
+        minType = LayoutGridTrackType.auto,
+        maxType = LayoutGridTrackType.auto,
+        maxValue = 0;
+
+  const LayoutGridTrack.minmax(
+      this.minType, this.value, this.maxType, this.maxValue)
+      : type = LayoutGridTrackType.minmax;
+}
+
+/// A grid line placement (grid-row/column-start/end).
+class LayoutGridLine {
+  final LayoutGridLineType type;
+  final int value;
+
+  const LayoutGridLine.auto()
+      : type = LayoutGridLineType.auto,
+        value = 0;
+  const LayoutGridLine.at(this.value)
+      : type = LayoutGridLineType.lineIndex;
+  const LayoutGridLine.span(this.value) : type = LayoutGridLineType.span;
+}
+
 enum LayoutDisplay {
   flex,
   none,
+  grid,
 }
 
 enum LayoutJustify {
@@ -57,6 +144,11 @@ enum LayoutJustify {
   spaceBetween,
   spaceAround,
   spaceEvenly,
+  // Grid backport values; appended to match the rive yoga fork.
+  auto,
+  stretch,
+  start,
+  end,
 }
 
 enum LayoutMeasureMode {
@@ -222,6 +314,18 @@ abstract class LayoutStyle {
 
   LayoutValue getMaxDimension(LayoutDimension dimension);
   void setMaxDimension(LayoutDimension dimension, LayoutValue value);
+
+  LayoutJustify get justifyItems;
+  set justifyItems(LayoutJustify value);
+
+  LayoutJustify get justifySelf;
+  set justifySelf(LayoutJustify value);
+
+  /// Replaces the track list of [collection] with [tracks].
+  void setGridTracks(
+      LayoutGridCollection collection, List<LayoutGridTrack> tracks);
+
+  void setGridLine(LayoutGridLinePosition position, LayoutGridLine line);
 }
 
 class Layout {
@@ -328,4 +432,11 @@ abstract class LayoutNode {
 
   Layout get layout;
   LayoutPadding get layoutPadding;
+
+  /// Resolved grid line positions along each axis, in this node's local content
+  /// space (same space as child [layout] positions). Available after layout on
+  /// a grid node; empty for non-grid nodes. Consecutive offsets bound a
+  /// cell/track, so N lines describe N-1 cells.
+  List<double> get gridColumnLineOffsets;
+  List<double> get gridRowLineOffsets;
 }

@@ -2,9 +2,9 @@
 import PackageDescription
 
 // Version and checksum are auto-updated by native/build_xcframework.sh
-let riveNativeVersion = "0.1.9+2"
+let riveNativeVersion = "0.1.11+3"
 let riveNativeVersionURLComponent = riveNativeVersion.replacingOccurrences(of: "+", with: "%2B")
-let riveNativeChecksum = "c03cf1d60c755b4dd9005e0114f6b718a23fa1d9803a4439702e5d993eafc056"
+let riveNativeChecksum = "de519c172fff7e6f8fa002c51f725fe863616d9a83457798768d990d8e37bbba"
 
 let package = Package(
     name: "rive_native",

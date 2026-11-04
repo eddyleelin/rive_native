@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:ffi';
-import 'dart:io' as io;
 import 'dart:ui' as ui;
 
 import 'package:ffi/ffi.dart';
@@ -183,8 +182,12 @@ base class _NativeRenderTexture extends RenderTexture {
   }
 
   @override
-  Widget widget({RenderTexturePainter? painter, flutter.Key? key}) =>
-      _RiveNativeView(this, painter, key: key);
+  Widget widget({
+    RenderTexturePainter? painter,
+    RenderResolution resolution = RenderResolution.defaultValue,
+    flutter.Key? key,
+  }) =>
+      _RiveNativeView(this, painter, resolution, key: key);
 
   void _markDestroyed() {
     _rendererPtr = nullptr;
@@ -329,9 +332,15 @@ base class _HeadlessRenderTexture extends RenderTexture {
   }
 
   @override
-  Widget widget({RenderTexturePainter? painter, flutter.Key? key}) {
-    throw UnsupportedError('Headless texture does not support widgets');
-  }
+  Widget widget({
+    RenderTexturePainter? painter,
+    RenderResolution resolution = RenderResolution.defaultValue,
+    flutter.Key? key,
+  }) =>
+      // The real render-object widget works against the headless texture: the
+      // TextureLayer composite is skipped because [textureId] is always -1, so
+      // the full layout/allocation/policy pipeline runs in widget tests.
+      _RiveNativeView(this, painter, resolution, key: key);
 
   @override
   void dispose() {
@@ -356,18 +365,15 @@ class _RiveNativeFFI extends RiveNative {
 
   Future<void> initialize() async {
     if (Platform.instance.isTesting) {
-      // Headless Metal rendering is only available on Apple platforms and
-      // only when the native lib was built with the headless symbols
-      // (e.g. lottie_to_rive's shared lib). The regular rive_native dylib
-      // does not include them.
-      if (!io.Platform.isMacOS && !io.Platform.isIOS) {
-        return;
-      }
+      // Headless rendering is only available when the native lib was built
+      // with the headless symbols. `./build.sh shared` includes them
+      // (headless_rendering.mm is gated on `not flutter_runtime` in
+      // premake5.lua); the flutter-runtime builds shipped to apps do not.
       if (!nativeLib.providesSymbol('createHeadlessContext')) {
         return;
       }
-      // Create a headless Metal render context for test mode so that
-      // Factory.rive is available without the Flutter platform plugin.
+      // Create a headless render context for test mode so that Factory.rive
+      // is available without the Flutter platform plugin.
       // Force atomic mode so rendering is deterministic across GPUs.
       _headlessContext = _createHeadlessContext(true);
       if (_headlessContext != nullptr) {
@@ -429,13 +435,16 @@ Future<RiveNative?> makeRiveNative() async {
 }
 
 class _RiveNativeView extends LeafRenderObjectWidget {
-  final _NativeRenderTexture renderTexture;
+  final RenderTexture renderTexture;
   final RenderTexturePainter? painter;
-  const _RiveNativeView(this.renderTexture, this.painter, {super.key});
+  final RenderResolution resolution;
+  const _RiveNativeView(this.renderTexture, this.painter, this.resolution,
+      {super.key});
 
   @override
   RenderObject createRenderObject(BuildContext context) {
     return _RiveNativeViewRenderObject(renderTexture, painter)
+      ..renderResolution = resolution
       ..devicePixelRatio = MediaQuery.devicePixelRatioOf(context)
       ..tickerModeEnabled = TickerMode.of(context);
   }
@@ -448,6 +457,7 @@ class _RiveNativeView extends LeafRenderObjectWidget {
     renderObject
       ..renderTexture = renderTexture
       ..painter = painter
+      ..renderResolution = resolution
       ..devicePixelRatio = MediaQuery.devicePixelRatioOf(context)
       ..tickerModeEnabled = TickerMode.of(context);
   }
@@ -511,8 +521,7 @@ class _RiveNativeViewRenderObject extends RiveNativeRenderBox
       return;
     }
 
-    final targetWidth = (size.width * scaleWidth).round();
-    final targetHeight = (size.height * scaleHeight).round();
+    final (targetWidth, targetHeight) = targetTextureSize();
 
     if (!renderTexture.needsResize(targetWidth, targetHeight)) {
       // Keep the composited id current — a shared texture can be recreated by

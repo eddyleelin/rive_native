@@ -8,7 +8,6 @@
 
 #include <d3dcompiler.h>
 
-#include "generated/shaders/image_draw_uniforms.glsl.hpp"
 #include "generated/shaders/flush_uniforms.glsl.hpp"
 #include "generated/shaders/advanced_blend.glsl.hpp"
 #include "generated/shaders/atomic_draw.glsl.hpp"
@@ -85,8 +84,8 @@ static std::string build_shader(DrawType drawType,
         case DrawType::interiorTriangulation:
             s << "#define " << GLSL_DRAW_INTERIOR_TRIANGLES << '\n';
             break;
-        case DrawType::atlasBlit:
-            s << "#define " << GLSL_ATLAS_BLIT << " 1\n";
+        case DrawType::featherAtlasBlit:
+            s << "#define " << GLSL_FEATHER_ATLAS_BLIT << " 1\n";
             break;
         case DrawType::imageRect:
             assert(interlockMode == InterlockMode::atomics);
@@ -104,6 +103,7 @@ static std::string build_shader(DrawType drawType,
             break;
         case DrawType::msaaStrokes:
         case DrawType::msaaMidpointFanBorrowedCoverage:
+        case DrawType::msaaDynamicMidpointFans:
         case DrawType::msaaMidpointFans:
         case DrawType::msaaMidpointFanStencilReset:
         case DrawType::msaaMidpointFanPathsStencil:
@@ -122,10 +122,6 @@ static std::string build_shader(DrawType drawType,
     {
         s << glsl::advanced_blend << '\n';
     }
-    if (drawType == DrawType::imageMesh || drawType == DrawType::imageRect)
-    {
-        s << glsl::image_draw_uniforms << '\n';
-    }
     if (interlockMode == InterlockMode::rasterOrdering)
     {
         switch (drawType)
@@ -138,7 +134,7 @@ static std::string build_shader(DrawType drawType,
                 s << glsl::draw_path_vert << '\n';
                 s << glsl::draw_raster_order_path_frag << '\n';
                 break;
-            case DrawType::atlasBlit:
+            case DrawType::featherAtlasBlit:
                 s << glsl::draw_path_common << '\n';
                 s << glsl::draw_path_vert << '\n';
                 s << glsl::draw_mesh_frag << '\n';
@@ -151,6 +147,7 @@ static std::string build_shader(DrawType drawType,
             case DrawType::renderPassResolve:
             case DrawType::msaaStrokes:
             case DrawType::msaaMidpointFanBorrowedCoverage:
+            case DrawType::msaaDynamicMidpointFans:
             case DrawType::msaaMidpointFans:
             case DrawType::msaaMidpointFanStencilReset:
             case DrawType::msaaMidpointFanPathsStencil:

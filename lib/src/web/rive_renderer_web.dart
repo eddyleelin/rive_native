@@ -1307,6 +1307,14 @@ class WebRawTextInput extends RawTextInput {
       RiveWasm.rawTextSelectWord.callAsFunction(null, _rawText);
 
   @override
+  bool get hasSelection =>
+      _wasmBool(RiveWasm.rawTextHasSelection.callAsFunction(null, _rawText));
+
+  @override
+  void clearSelection() =>
+      RiveWasm.rawTextClearSelection.callAsFunction(null, _rawText);
+
+  @override
   void undo() => RiveWasm.rawTextUndo.callAsFunction(null, _rawText);
 
   @override
@@ -1393,4 +1401,4 @@ class WebRawTextInput extends RawTextInput {
 }
 
 RawTextInput makeRawTextInput(Factory riveFactory) =>
-    WebRawTextInput(riveFactory as WebRiveFactory);
+    WebRawTextInput(riveFactory as WebFactory);

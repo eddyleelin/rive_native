@@ -11,6 +11,7 @@ import 'package:rive_native/src/ffi/rive_audio_ffi.dart';
 import 'package:rive_native/src/ffi/rive_ffi.dart';
 import 'package:rive_native/src/ffi/rive_ffi_reference.dart';
 import 'package:rive_native/src/ffi/rive_renderer_ffi.dart' as rive_renderer;
+import 'package:rive_native/src/ffi/rive_text_ffi.dart' as rive_text;
 import 'package:rive_native/utilities.dart';
 
 final DynamicLibrary _nativeLib = DynamicLibraryHelper.nativeLib;
@@ -747,6 +748,15 @@ final int Function(Pointer<Void> state, Pointer<Void> renderImage)
         )
         .asFunction();
 
+// Push a Font onto the Lua stack as a ScriptedFont userdata.
+// Returns 1 if successful, 0 if the font is null.
+final int Function(Pointer<Void> state, Pointer<Void> font) _riveLuaPushFont =
+    _nativeLib
+        .lookup<NativeFunction<Int32 Function(Pointer<Void>, Pointer<Void>)>>(
+          'riveLuaPushFont',
+        )
+        .asFunction();
+
 // Creates a (non-GPU) Canvas and pushes it onto the Lua stack.
 // Returns 1 on success (pushes handle or nil).
 final int Function(Pointer<Void> state, int width, int height)
@@ -813,6 +823,15 @@ final void Function(Pointer<Void> state) _riveLuaDisableDrawCanvasPhase =
                 Void Function(
                   Pointer<Void>,
                 )>>('riveLuaDisableDrawCanvasPhase')
+        .asFunction();
+
+final void Function(Pointer<Void> state) _riveLuaAdvanceDetachedViewModels =
+    _nativeLib
+        .lookup<
+            NativeFunction<
+                Void Function(
+                  Pointer<Void>,
+                )>>('riveLuaAdvanceDetachedViewModels')
         .asFunction();
 
 // Compiles a shader from the in-memory RSTB registry and pushes it as a
@@ -1542,6 +1561,11 @@ class LuauStateFFI extends LuauState implements RiveFFIReference {
   }
 
   @override
+  int pushFont(Font font) {
+    return _riveLuaPushFont(_statePtr, (font as rive_text.FontFFI).fontPtr);
+  }
+
+  @override
   int pushCanvas(int width, int height) {
     return _riveLuaPushCanvas(_statePtr, width, height);
   }
@@ -1612,6 +1636,11 @@ class LuauStateFFI extends LuauState implements RiveFFIReference {
   @override
   void disableDrawCanvasPhase() {
     _riveLuaDisableDrawCanvasPhase(_statePtr);
+  }
+
+  @override
+  void advanceDetachedViewModels() {
+    _riveLuaAdvanceDetachedViewModels(_statePtr);
   }
 
   @override

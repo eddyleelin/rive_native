@@ -345,6 +345,54 @@ final void Function(Pointer<Void>, int, double, int) _yogaStyleSetMaxDimension =
                     Int32)>>('yogaStyleSetMaxDimension')
         .asFunction();
 
+final void Function(Pointer<Void>, int, int) _yogaStyleSetGridTrackCount =
+    _nativeLib
+        .lookup<NativeFunction<Void Function(Pointer<Void>, Int, Uint32)>>(
+            'yogaStyleSetGridTrackCount')
+        .asFunction();
+
+final void Function(Pointer<Void>, int, int, int, double)
+    _yogaStyleSetGridTrack = _nativeLib
+        .lookup<
+            NativeFunction<
+                Void Function(Pointer<Void>, Int, Uint32, Int,
+                    Float)>>('yogaStyleSetGridTrack')
+        .asFunction();
+
+final void Function(Pointer<Void>, int, int, int, double, int, double)
+    _yogaStyleSetGridTrackMinMax = _nativeLib
+        .lookup<
+            NativeFunction<
+                Void Function(Pointer<Void>, Int, Uint32, Int, Float, Int,
+                    Float)>>('yogaStyleSetGridTrackMinMax')
+        .asFunction();
+
+final void Function(Pointer<Void>, int, int, int) _yogaStyleSetGridLine =
+    _nativeLib
+        .lookup<NativeFunction<Void Function(Pointer<Void>, Int, Int, Int)>>(
+            'yogaStyleSetGridLine')
+        .asFunction();
+
+final int Function(Pointer<Void>) _yogaStyleGetJustifyItems = _nativeLib
+    .lookup<NativeFunction<Int Function(Pointer<Void>)>>(
+        'yogaStyleGetJustifyItems')
+    .asFunction();
+
+final void Function(Pointer<Void>, int) _yogaStyleSetJustifyItems = _nativeLib
+    .lookup<NativeFunction<Void Function(Pointer<Void>, Int)>>(
+        'yogaStyleSetJustifyItems')
+    .asFunction();
+
+final int Function(Pointer<Void>) _yogaStyleGetJustifySelf = _nativeLib
+    .lookup<NativeFunction<Int Function(Pointer<Void>)>>(
+        'yogaStyleGetJustifySelf')
+    .asFunction();
+
+final void Function(Pointer<Void>, int) _yogaStyleSetJustifySelf = _nativeLib
+    .lookup<NativeFunction<Void Function(Pointer<Void>, Int)>>(
+        'yogaStyleSetJustifySelf')
+    .asFunction();
+
 final void Function(Pointer<Void>, double, double, int)
     _yogaNodeCalculateLayout = _nativeLib
         .lookup<
@@ -383,6 +431,39 @@ final _YGLayout Function(Pointer<Void>) _yogaNodeGetPadding = _nativeLib
     .lookup<NativeFunction<_YGLayout Function(Pointer<Void>)>>(
         'yogaNodeGetPadding')
     .asFunction();
+
+final int Function(Pointer<Void>) _yogaNodeGetGridColumnLineCount = _nativeLib
+    .lookup<NativeFunction<Uint32 Function(Pointer<Void>)>>(
+        'yogaNodeGetGridColumnLineCount')
+    .asFunction();
+
+final double Function(Pointer<Void>, int) _yogaNodeGetGridColumnLineOffset =
+    _nativeLib
+        .lookup<NativeFunction<Float Function(Pointer<Void>, Uint32)>>(
+            'yogaNodeGetGridColumnLineOffset')
+        .asFunction();
+
+final int Function(Pointer<Void>) _yogaNodeGetGridRowLineCount = _nativeLib
+    .lookup<NativeFunction<Uint32 Function(Pointer<Void>)>>(
+        'yogaNodeGetGridRowLineCount')
+    .asFunction();
+
+final double Function(Pointer<Void>, int) _yogaNodeGetGridRowLineOffset =
+    _nativeLib
+        .lookup<NativeFunction<Float Function(Pointer<Void>, Uint32)>>(
+            'yogaNodeGetGridRowLineOffset')
+        .asFunction();
+
+List<double> _readGridLineOffsets(
+    Pointer<Void> ptr,
+    int Function(Pointer<Void>) count,
+    double Function(Pointer<Void>, int) offset) {
+  final n = count(ptr);
+  if (n == 0) {
+    return const [];
+  }
+  return List<double>.generate(n, (i) => offset(ptr, i), growable: false);
+}
 
 final class _YGSize extends Struct {
   @Float()
@@ -478,6 +559,16 @@ class LayoutNodeFFI extends LayoutNode implements Finalizable {
   @override
   LayoutPadding get layoutPadding =>
       _yogaNodeGetPadding(_nativePtr).toPadding();
+
+  @override
+  List<double> get gridColumnLineOffsets => _readGridLineOffsets(
+      _nativePtr,
+      _yogaNodeGetGridColumnLineCount,
+      _yogaNodeGetGridColumnLineOffset);
+
+  @override
+  List<double> get gridRowLineOffsets => _readGridLineOffsets(_nativePtr,
+      _yogaNodeGetGridRowLineCount, _yogaNodeGetGridRowLineOffset);
 
   @override
   void clearChildren() => _yogaNodeClearChildren(_nativePtr);
@@ -807,6 +898,44 @@ class LayoutStyleFFI extends LayoutStyle implements Finalizable {
   void setMaxDimension(LayoutDimension dimension, LayoutValue value) =>
       _yogaStyleSetMaxDimension(
           _nativePtr, dimension.index, value.value, value.unit.index);
+
+  @override
+  LayoutJustify get justifyItems =>
+      LayoutJustify.values[_yogaStyleGetJustifyItems(_nativePtr)];
+
+  @override
+  set justifyItems(LayoutJustify value) =>
+      _yogaStyleSetJustifyItems(_nativePtr, value.index);
+
+  @override
+  LayoutJustify get justifySelf =>
+      LayoutJustify.values[_yogaStyleGetJustifySelf(_nativePtr)];
+
+  @override
+  set justifySelf(LayoutJustify value) =>
+      _yogaStyleSetJustifySelf(_nativePtr, value.index);
+
+  @override
+  void setGridTracks(
+      LayoutGridCollection collection, List<LayoutGridTrack> tracks) {
+    _yogaStyleSetGridTrackCount(_nativePtr, collection.index, tracks.length);
+    for (var i = 0; i < tracks.length; i++) {
+      final track = tracks[i];
+      if (track.type == LayoutGridTrackType.minmax) {
+        _yogaStyleSetGridTrackMinMax(_nativePtr, collection.index, i,
+            track.minType.index, track.value, track.maxType.index,
+            track.maxValue);
+      } else {
+        _yogaStyleSetGridTrack(
+            _nativePtr, collection.index, i, track.type.index, track.value);
+      }
+    }
+  }
+
+  @override
+  void setGridLine(LayoutGridLinePosition position, LayoutGridLine line) =>
+      _yogaStyleSetGridLine(
+          _nativePtr, position.index, line.type.index, line.value);
 }
 
 LayoutStyle makeLayoutStyle() => LayoutStyleFFI(_makeYogaStyle());

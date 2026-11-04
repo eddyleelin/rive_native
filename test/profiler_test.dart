@@ -54,7 +54,7 @@ void main() {
     // Verify magic number (0x52505246 = "RPRF")
     expect(byteData.getUint32(0, Endian.little), 0x52505246);
 
-    // Verify version (2 = event streaming format)
+    // Verify version is the RPRF format version emitted by the runtime.
     expect(byteData.getUint32(4, Endian.little), 2);
   });
 

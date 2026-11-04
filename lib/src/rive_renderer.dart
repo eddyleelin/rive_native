@@ -632,6 +632,12 @@ abstract class RawTextInput {
   /// after a double click on the local space of the RawTextInput.
   void selectWord();
 
+  /// Whether the cursor currently has a range selection.
+  bool get hasSelection;
+
+  /// Collapse the selection to the cursor's end position.
+  void clearSelection();
+
   /// Undo a text change operation on this RawTextInput, also moves the
   /// cursor to the position it was at prior to text change.
   void undo();

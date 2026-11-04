@@ -326,8 +326,16 @@ INLINE uint pls_atomic_add(PLS_TEX2D<uint> plane, int2 _plsCoord, uint x)
         uint _instanceID = _instanceIDWithoutBase + $baseInstance;             \
         Varyings _varyings;
 
-#define IMAGE_RECT_VERTEX_MAIN(NAME, Attrs, attrs, _vertexID, _instanceID)     \
-    Varyings NAME(Attrs attrs, uint _vertexID : $SV_VertexID)                  \
+#define IMAGE_RECT_VERTEX_MAIN(NAME,                                           \
+                               Attrs,                                          \
+                               attrs,                                          \
+                               ImageDrawAttrs,                                 \
+                               imageDrawAttrs,                                 \
+                               _vertexID,                                      \
+                               _instanceID)                                    \
+    Varyings NAME(Attrs attrs,                                                 \
+                  ImageDrawAttrs imageDrawAttrs,                               \
+                  uint _vertexID : $SV_VertexID)                               \
     {                                                                          \
         Varyings _varyings;                                                    \
         float4 _pos;
@@ -337,9 +345,12 @@ INLINE uint pls_atomic_add(PLS_TEX2D<uint> plane, int2 _plsCoord, uint x)
                                position,                                       \
                                UVAttr,                                         \
                                uv,                                             \
+                               ImageDrawAttrs,                                 \
+                               imageDrawAttrs,                                 \
                                _vertexID)                                      \
     Varyings NAME(PositionAttr position,                                       \
                   UVAttr uv,                                                   \
+                  ImageDrawAttrs imageDrawAttrs,                               \
                   uint _vertexID : $SV_VertexID)                               \
     {                                                                          \
         Varyings _varyings;                                                    \
@@ -351,8 +362,13 @@ INLINE uint pls_atomic_add(PLS_TEX2D<uint> plane, int2 _plsCoord, uint x)
     return _varyings;
 #endif // End !@NO_VARYING
 
-// RHI is forced counter clockwise front. So reverse the "isFrontFace" argument
-// for clockwise
+// Unreal flips the front face for direct x but not vulkan. We should test this
+// in other platforms and make sure it comes out the correct direction.
+#if $COMPILER_DXC && ($COMPILER_VULKAN || $COMPILER_GLSL_ES3_1)
+#define CLOCKWISE_FROM_FRONT_FACE(_ff) (_ff)
+#else
+#define CLOCKWISE_FROM_FRONT_FACE(_ff) (!(_ff))
+#endif
 
 #ifdef @NO_VARYING
 #define FRAG_DATA_MAIN(DATA_TYPE, NAME)                                        \
@@ -367,7 +383,7 @@ INLINE uint pls_atomic_add(PLS_TEX2D<uint> plane, int2 _plsCoord, uint x)
         $SV_Target                                                             \
     {                                                                          \
         float2 _fragCoord = _pos.xy;                                           \
-        bool _clockwise = !_isFrontFace;
+        bool _clockwise = CLOCKWISE_FROM_FRONT_FACE(_isFrontFace);
 #else
 #define FRAG_DATA_MAIN(DATA_TYPE, NAME)                                        \
     $EARLYDEPTHSTENCIL DATA_TYPE NAME(Varyings _varyings,                      \
@@ -387,7 +403,7 @@ INLINE uint pls_atomic_add(PLS_TEX2D<uint> plane, int2 _plsCoord, uint x)
         float2 _fragCoord = _varyings._pos.xy;                                 \
         int2 _plsCoord = int2(floor(_fragCoord));                              \
         uint _plsIdx = _plsCoord.y * uniforms.renderTargetWidth + _plsCoord.x; \
-        bool _clockwise = !_isFrontFace;
+        bool _clockwise = CLOCKWISE_FROM_FRONT_FACE(_isFrontFace);
 
 #endif
 

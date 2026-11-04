@@ -1,21 +1,13 @@
-import 'dart:ffi';
-import 'dart:io';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rive_native/rive_native.dart' as rive;
-import 'package:rive_native/src/ffi/dynamic_library_helper.dart';
 
-final DynamicLibrary nativeLib = DynamicLibraryHelper.nativeLib;
-
-final int Function() _debugFileCount = nativeLib
-    .lookup<NativeFunction<Uint32 Function()>>('debugFileCount')
-    .asFunction();
+import 'src/debug_symbols.dart';
+import 'src/utils.dart';
 
 void main() {
   test('out of band asset count test', () async {
-    expect(_debugFileCount(), 0);
-    final file = File('test/assets/out_of_band.riv');
-    final bytes = await file.readAsBytes();
+    expect(debugFileCount(), 0);
+    final bytes = loadFile('assets/out_of_band.riv');
 
     var totalAssetCount = 0;
     var hostedAssetCount = 0;
@@ -60,7 +52,7 @@ void main() {
       },
     );
 
-    expect(_debugFileCount(), 1);
+    expect(debugFileCount(), 1);
 
     expect(totalAssetCount, 9, reason: 'Total asset count should be 6');
     expect(hostedAssetCount, 3, reason: 'Hosted asset count should be 3');
@@ -73,13 +65,12 @@ void main() {
     expect(unknownAssetCount, 0, reason: 'Unknown asset count should be 0');
 
     riveFile?.dispose();
-    expect(_debugFileCount(), 0);
+    expect(debugFileCount(), 0);
   });
 
   test('out of band property test', () async {
-    expect(_debugFileCount(), 0);
-    final file = File('test/assets/out_of_band.riv');
-    final bytes = await file.readAsBytes();
+    expect(debugFileCount(), 0);
+    final bytes = loadFile('assets/out_of_band.riv');
 
     final riveFactory = rive.Factory.flutter;
 
@@ -156,8 +147,8 @@ void main() {
     expect(imageAssets[2].width, 312);
     expect(imageAssets[2].height, 152);
 
-    expect(_debugFileCount(), 1);
+    expect(debugFileCount(), 1);
     riveFile?.dispose();
-    expect(_debugFileCount(), 0);
+    expect(debugFileCount(), 0);
   });
 }

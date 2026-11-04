@@ -23,8 +23,10 @@
 #include "generated/shaders/wgsl/color_ramp.vert.hpp"
 #include "generated/shaders/wgsl/color_ramp.frag.hpp"
 #include "generated/shaders/wgsl/tessellate.webgpu_vert.hpp"
+#include "generated/shaders/wgsl/tessellate.webgpu_nossbo_vert.hpp"
 #include "generated/shaders/wgsl/tessellate.webgpu_frag.hpp"
 #include "generated/shaders/wgsl/render_atlas.webgpu_vert.hpp"
+#include "generated/shaders/wgsl/render_atlas.webgpu_nossbo_vert.hpp"
 #include "generated/shaders/wgsl/render_atlas_fill.webgpu_frag.hpp"
 #include "generated/shaders/wgsl/render_atlas_stroke.webgpu_frag.hpp"
 
@@ -55,10 +57,14 @@
 // InterlockMode::msaa shaders.
 #include "generated/shaders/wgsl/draw_msaa_path.webgpu_vert.hpp"
 #include "generated/shaders/wgsl/draw_msaa_path.webgpu_noclipdistance_vert.hpp"
+#include "generated/shaders/wgsl/draw_msaa_path.webgpu_nossbo_vert.hpp"
+#include "generated/shaders/wgsl/draw_msaa_path.webgpu_nossbo_noclipdistance_vert.hpp"
 #include "generated/shaders/wgsl/draw_msaa_path.webgpu_frag.hpp"
 #include "generated/shaders/wgsl/draw_msaa_path.webgpu_fixedcolor_frag.hpp"
 #include "generated/shaders/wgsl/draw_msaa_atlas_blit.webgpu_vert.hpp"
 #include "generated/shaders/wgsl/draw_msaa_atlas_blit.webgpu_noclipdistance_vert.hpp"
+#include "generated/shaders/wgsl/draw_msaa_atlas_blit.webgpu_nossbo_vert.hpp"
+#include "generated/shaders/wgsl/draw_msaa_atlas_blit.webgpu_nossbo_noclipdistance_vert.hpp"
 #include "generated/shaders/wgsl/draw_msaa_atlas_blit.webgpu_frag.hpp"
 #include "generated/shaders/wgsl/draw_msaa_atlas_blit.webgpu_fixedcolor_frag.hpp"
 #include "generated/shaders/wgsl/draw_msaa_image_mesh.webgpu_vert.hpp"
@@ -74,8 +80,6 @@
 
 #ifdef RIVE_WEBGPU
 #include <webgpu/webgpu_cpp.h>
-#include <emscripten.h>
-#include <emscripten/html5.h>
 #if RIVE_WEBGPU == 1
 #include "webgpu_compat.h"
 #endif
@@ -107,17 +111,6 @@ static WGPUOptionalBool wgpu_bool(bool value)
 constexpr static auto RIVE_FRONT_FACE = wgpu::FrontFace::CW;
 
 constexpr static uint32_t MSAA_SAMPLE_COUNT = 4u;
-
-constexpr static WGPUBlendComponent BLEND_COMPONENT_SRC_OVER = {
-    .operation = WGPUBlendOperation_Add,
-    .srcFactor = WGPUBlendFactor_One,
-    .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha,
-};
-
-constexpr static WGPUBlendState BLEND_STATE_SRC_OVER = {
-    .color = BLEND_COMPONENT_SRC_OVER,
-    .alpha = BLEND_COMPONENT_SRC_OVER,
-};
 
 constexpr static WGPUStencilFaceState STENCIL_FACE_STATE_DISABLED = {
     .compare = WGPUCompareFunction_Always,
@@ -183,9 +176,9 @@ static WGPUStencilFaceState wgpu_stencil_face_state(
 {
     return {
         .compare = wgpu_compare_function(face.compareOp),
-        .failOp = wgpu_stencil_operation(face.failOp),
+        .failOp = wgpu_stencil_operation(face.stencilFailOp),
         .depthFailOp = wgpu_stencil_operation(face.depthFailOp),
-        .passOp = wgpu_stencil_operation(face.passOp),
+        .passOp = wgpu_stencil_operation(face.depthStencilPassOp),
     };
 }
 
@@ -249,11 +242,12 @@ static wgpu::ShaderModule compile_shader_module_wgsl(
 }
 
 #ifdef RIVE_WAGYU
+#include "rive/renderer/gl/load_store_actions_ext.hpp"
+
 #include <webgpu/webgpu_wagyu.h>
 
 #include "generated/shaders/glsl.glsl.hpp"
 #include "generated/shaders/constants.glsl.hpp"
-#include "generated/shaders/image_draw_uniforms.glsl.hpp"
 #include "generated/shaders/flush_uniforms.glsl.hpp"
 #include "generated/shaders/common.glsl.hpp"
 #include "generated/shaders/color_ramp.glsl.hpp"
@@ -273,12 +267,6 @@ static wgpu::ShaderModule compile_shader_module_wgsl(
 // for a uniform with this name and update its value when draw commands have a
 // base instance.
 constexpr static char BASE_INSTANCE_UNIFORM_NAME[] = "nrdp_BaseInstance";
-
-EM_JS(int, gl_max_vertex_shader_storage_blocks, (), {
-    const version = globalThis.nrdp ?.version || navigator.getNrdpVersion();
-    return version.libraries.opengl.options.limits
-        .GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS;
-});
 
 static wgpu::ShaderModule compile_shader_module_wagyu(
     wgpu::Device device,
@@ -479,7 +467,6 @@ public:
                         .type = wgpu::BufferBindingType::Uniform,
                     },
             },
-#ifdef RIVE_WAGYU
             impl->m_capabilities.polyfillVertexStorageBuffers ?
                 wgpu::BindGroupLayoutEntry{
                     .binding = PATH_BUFFER_IDX,
@@ -490,7 +477,6 @@ public:
                             .viewDimension = wgpu::TextureViewDimension::e2D,
                         },
                 } :
-#endif
                 wgpu::BindGroupLayoutEntry{
                     .binding = PATH_BUFFER_IDX,
                     .visibility = pathStorageVisibility,
@@ -499,7 +485,6 @@ public:
                             .type = wgpu::BufferBindingType::ReadOnlyStorage,
                         },
                 },
-#ifdef RIVE_WAGYU
             impl->m_capabilities.polyfillVertexStorageBuffers ?
                 wgpu::BindGroupLayoutEntry{
                     .binding = PAINT_BUFFER_IDX,
@@ -510,7 +495,6 @@ public:
                             .viewDimension = wgpu::TextureViewDimension::e2D,
                         },
                 } :
-#endif
                 wgpu::BindGroupLayoutEntry{
                     .binding = PAINT_BUFFER_IDX,
                     .visibility = paintStorageVisibility,
@@ -519,7 +503,6 @@ public:
                             .type = wgpu::BufferBindingType::ReadOnlyStorage,
                         },
                 },
-#ifdef RIVE_WAGYU
             impl->m_capabilities.polyfillVertexStorageBuffers ?
                 wgpu::BindGroupLayoutEntry{
                     .binding = PAINT_AUX_BUFFER_IDX,
@@ -531,7 +514,6 @@ public:
                             .viewDimension = wgpu::TextureViewDimension::e2D,
                         },
                 } :
-#endif
                 wgpu::BindGroupLayoutEntry{
                     .binding = PAINT_AUX_BUFFER_IDX,
                     .visibility = paintStorageVisibility,
@@ -540,7 +522,6 @@ public:
                             .type = wgpu::BufferBindingType::ReadOnlyStorage,
                         },
                 },
-#ifdef RIVE_WAGYU
             impl->m_capabilities.polyfillVertexStorageBuffers ?
                 wgpu::BindGroupLayoutEntry{
                     .binding = CONTOUR_BUFFER_IDX,
@@ -551,7 +532,6 @@ public:
                             .viewDimension = wgpu::TextureViewDimension::e2D,
                         },
                 } :
-#endif
                 wgpu::BindGroupLayoutEntry{
                     .binding = CONTOUR_BUFFER_IDX,
                     .visibility = wgpu::ShaderStage::Vertex,
@@ -561,7 +541,7 @@ public:
                         },
                 },
             {
-                .binding = FEATHER_TEXTURE_IDX,
+                .binding = GAUSSIAN_INTEGRAL_TEXTURE_IDX,
                 .visibility =
                     wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment,
                 .texture =
@@ -580,7 +560,7 @@ public:
                     },
             },
             {
-                .binding = ATLAS_TEXTURE_IDX,
+                .binding = FEATHER_ATLAS_TEXTURE_IDX,
                 .visibility = wgpu::ShaderStage::Fragment,
                 .texture =
                     {
@@ -598,17 +578,6 @@ public:
                     },
             },
             {
-                .binding = IMAGE_DRAW_UNIFORM_BUFFER_IDX,
-                .visibility =
-                    wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment,
-                .buffer =
-                    {
-                        .type = wgpu::BufferBindingType::Uniform,
-                        .hasDynamicOffset = true,
-                        .minBindingSize = sizeof(gpu::ImageDrawUniforms),
-                    },
-            },
-            {
                 .binding = DST_COLOR_TEXTURE_IDX,
                 .visibility = wgpu::ShaderStage::Fragment,
                 .texture =
@@ -618,7 +587,7 @@ public:
                     },
             },
         }};
-        static_assert(DRAW_BINDINGS_COUNT == 11);
+        static_assert(DRAW_BINDINGS_COUNT == 10);
 
         wgpu::BindGroupLayoutDescriptor perFlushBindingsDesc = {
             .entryCount = DRAW_BINDINGS_COUNT,
@@ -728,13 +697,13 @@ public:
                 .sampler = {.type = wgpu::SamplerBindingType::Filtering},
             },
             {
-                .binding = FEATHER_TEXTURE_IDX,
+                .binding = GAUSSIAN_INTEGRAL_TEXTURE_IDX,
                 .visibility =
                     wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment,
                 .sampler = {.type = wgpu::SamplerBindingType::Filtering},
             },
             {
-                .binding = ATLAS_TEXTURE_IDX,
+                .binding = FEATHER_ATLAS_TEXTURE_IDX,
                 .visibility = wgpu::ShaderStage::Fragment,
                 .sampler = {.type = wgpu::SamplerBindingType::Filtering},
             },
@@ -818,7 +787,7 @@ public:
         if (impl->m_capabilities.backendType == wgpu::BackendType::OpenGLES)
         {
             // Rive shaders tend to be long and prone to vendor bugs in the
-            // compiler. Instead of SPIRV, send down the raw Rive GLSL sources,
+            // compiler. Instead of wgsl, send down the raw Rive GLSL sources,
             // which have various workarounds for known issues and are tested
             // regularly.
             std::ostringstream glsl;
@@ -955,7 +924,7 @@ public:
         if (impl->m_capabilities.backendType == wgpu::BackendType::OpenGLES)
         {
             // Rive shaders tend to be long and prone to vendor bugs in the
-            // compiler. Instead of SPIRV, send down the raw Rive GLSL sources,
+            // compiler. Instead of wgsl, send down the raw Rive GLSL sources,
             // which have various workarounds for known issues and are tested
             // regularly.
             std::ostringstream glsl;
@@ -993,9 +962,11 @@ public:
         else
 #endif
         {
-            vertexShaderModule =
-                compile_shader_module_wgsl(device,
-                                           wgsl::tessellate_webgpu_vert);
+            vertexShaderModule = compile_shader_module_wgsl(
+                device,
+                impl->m_capabilities.polyfillVertexStorageBuffers
+                    ? wgsl::tessellate_webgpu_nossbo_vert
+                    : wgsl::tessellate_webgpu_vert);
             fragmentShaderModule =
                 compile_shader_module_wgsl(device,
                                            wgsl::tessellate_webgpu_frag);
@@ -1078,17 +1049,17 @@ private:
 };
 
 // Renders tessellated vertices to the tessellation texture.
-class RenderContextWebGPUImpl::AtlasPipeline
+class RenderContextWebGPUImpl::FeatherAtlasPipeline
 {
 public:
-    AtlasPipeline(RenderContextWebGPUImpl* impl)
+    FeatherAtlasPipeline(RenderContextWebGPUImpl* impl)
     {
         const wgpu::Device device = impl->device();
         const auto& drawPipelineLayout =
             impl->drawPipelineLayout(gpu::InterlockMode::rasterOrdering);
 
         wgpu::BindGroupLayoutDescriptor perFlushBindingsDesc = {
-            .entryCount = ATLAS_BINDINGS_COUNT,
+            .entryCount = FEATHER_ATLAS_BINDINGS_COUNT,
             .entries = drawPipelineLayout.perFlushBindingLayoutEntries(),
         };
 
@@ -1116,7 +1087,7 @@ public:
         if (impl->m_capabilities.backendType == wgpu::BackendType::OpenGLES)
         {
             // Rive shaders tend to be long and prone to vendor bugs in the
-            // compiler. Instead of SPIRV, send down the raw Rive GLSL sources,
+            // compiler. Instead of wgsl, send down the raw Rive GLSL sources,
             // which have various workarounds for known issues and are tested
             // regularly.
             std::ostringstream glsl;
@@ -1173,9 +1144,11 @@ public:
         else
 #endif
         {
-            vertexShaderModule =
-                compile_shader_module_wgsl(device,
-                                           wgsl::render_atlas_webgpu_vert);
+            vertexShaderModule = compile_shader_module_wgsl(
+                device,
+                impl->m_capabilities.polyfillVertexStorageBuffers
+                    ? wgsl::render_atlas_webgpu_nossbo_vert
+                    : wgsl::render_atlas_webgpu_vert);
             fillFragmentShaderModule =
                 compile_shader_module_wgsl(device,
                                            wgsl::render_atlas_fill_webgpu_frag);
@@ -1357,8 +1330,8 @@ public:
                     case DrawType::interiorTriangulation:
                         addDefine(GLSL_DRAW_INTERIOR_TRIANGLES);
                         break;
-                    case DrawType::atlasBlit:
-                        addDefine(GLSL_ATLAS_BLIT);
+                    case DrawType::featherAtlasBlit:
+                        addDefine(GLSL_FEATHER_ATLAS_BLIT);
                         break;
                     case DrawType::imageRect:
                         addDefine(GLSL_DRAW_IMAGE);
@@ -1371,6 +1344,7 @@ public:
                         break;
                     case DrawType::msaaStrokes:
                     case DrawType::msaaMidpointFanBorrowedCoverage:
+                    case DrawType::msaaDynamicMidpointFans:
                     case DrawType::msaaMidpointFans:
                     case DrawType::msaaMidpointFanStencilReset:
                     case DrawType::msaaMidpointFanPathsStencil:
@@ -1445,19 +1419,19 @@ public:
                                  << '\n';
                         }
                         break;
-                    case DrawType::atlasBlit:
+                    case DrawType::featherAtlasBlit:
                         glsl << gpu::glsl::draw_path_common << '\n';
                         glsl << gpu::glsl::draw_path_vert << '\n';
                         glsl << gpu::glsl::draw_mesh_frag << '\n';
                         break;
                     case DrawType::imageMesh:
-                        glsl << gpu::glsl::image_draw_uniforms << '\n';
                         glsl << gpu::glsl::draw_image_mesh_vert << '\n';
                         glsl << gpu::glsl::draw_mesh_frag << '\n';
                         break;
                     case DrawType::imageRect:
                     case DrawType::msaaStrokes:
                     case DrawType::msaaMidpointFanBorrowedCoverage:
+                    case DrawType::msaaDynamicMidpointFans:
                     case DrawType::msaaMidpointFans:
                     case DrawType::msaaMidpointFanStencilReset:
                     case DrawType::msaaMidpointFanPathsStencil:
@@ -1519,7 +1493,7 @@ public:
                                       atomic_draw_interior_triangles_webgpu_frag;
                         break;
 
-                    case DrawType::atlasBlit:
+                    case DrawType::featherAtlasBlit:
                         vertexShader =
                             &wgsl::atomic_draw_atlas_blit_webgpu_vert;
                         fragmentShader =
@@ -1582,6 +1556,7 @@ public:
 
                     case DrawType::msaaStrokes:
                     case DrawType::msaaMidpointFanBorrowedCoverage:
+                    case DrawType::msaaDynamicMidpointFans:
                     case DrawType::msaaMidpointFans:
                     case DrawType::msaaMidpointFanStencilReset:
                     case DrawType::msaaMidpointFanPathsStencil:
@@ -1605,16 +1580,32 @@ public:
                     case DrawType::msaaOuterCubics:
                     case DrawType::msaaStrokes:
                     case DrawType::msaaMidpointFanBorrowedCoverage:
+                    case DrawType::msaaDynamicMidpointFans:
                     case DrawType::msaaMidpointFans:
                     case DrawType::msaaMidpointFanStencilReset:
                     case DrawType::msaaMidpointFanPathsStencil:
                     case DrawType::msaaMidpointFanPathsCover:
-                        vertexShader =
-                            enums::is_flag_set(shaderFeatures,
-                                               ShaderFeatures::ENABLE_CLIP_RECT)
-                                ? &wgsl::draw_msaa_path_webgpu_vert
-                                : &wgsl::
-                                      draw_msaa_path_webgpu_noclipdistance_vert;
+                        if (context->m_capabilities
+                                .polyfillVertexStorageBuffers)
+                        {
+                            vertexShader =
+                                enums::is_flag_set(
+                                    shaderFeatures,
+                                    ShaderFeatures::ENABLE_CLIP_RECT)
+                                    ? &wgsl::draw_msaa_path_webgpu_nossbo_vert
+                                    : &wgsl::
+                                          draw_msaa_path_webgpu_nossbo_noclipdistance_vert;
+                        }
+                        else
+                        {
+                            vertexShader =
+                                enums::is_flag_set(
+                                    shaderFeatures,
+                                    ShaderFeatures::ENABLE_CLIP_RECT)
+                                    ? &wgsl::draw_msaa_path_webgpu_vert
+                                    : &wgsl::
+                                          draw_msaa_path_webgpu_noclipdistance_vert;
+                        }
                         fragmentShader =
                             fixedFunctionColorOutput
                                 ? &wgsl::draw_msaa_path_webgpu_fixedcolor_frag
@@ -1632,13 +1623,29 @@ public:
                         RIVE_UNREACHABLE();
                         break;
 
-                    case DrawType::atlasBlit:
-                        vertexShader =
-                            enums::is_flag_set(shaderFeatures,
-                                               ShaderFeatures::ENABLE_CLIP_RECT)
-                                ? &wgsl::draw_msaa_atlas_blit_webgpu_vert
-                                : &wgsl::
-                                      draw_msaa_atlas_blit_webgpu_noclipdistance_vert;
+                    case DrawType::featherAtlasBlit:
+                        if (context->m_capabilities
+                                .polyfillVertexStorageBuffers)
+                        {
+                            vertexShader =
+                                enums::is_flag_set(
+                                    shaderFeatures,
+                                    ShaderFeatures::ENABLE_CLIP_RECT)
+                                    ? &wgsl::
+                                          draw_msaa_atlas_blit_webgpu_nossbo_vert
+                                    : &wgsl::
+                                          draw_msaa_atlas_blit_webgpu_nossbo_noclipdistance_vert;
+                        }
+                        else
+                        {
+                            vertexShader =
+                                enums::is_flag_set(
+                                    shaderFeatures,
+                                    ShaderFeatures::ENABLE_CLIP_RECT)
+                                    ? &wgsl::draw_msaa_atlas_blit_webgpu_vert
+                                    : &wgsl::
+                                          draw_msaa_atlas_blit_webgpu_noclipdistance_vert;
+                        }
                         fragmentShader =
                             fixedFunctionColorOutput
                                 ? &wgsl::
@@ -1780,6 +1787,15 @@ RenderContextWebGPUImpl::RenderContextWebGPUImpl(
     m_device(device), m_queue(queue), m_contextOptions(contextOptions)
 {
     wgpu::Limits deviceLimits = {};
+    // CompatibilityModeLimits (and compatibility mode itself) don't exist on
+    // legacy WebGPU v1.
+#if RIVE_WEBGPU > 1
+    wgpu::CompatibilityModeLimits compatModeLimits = {};
+    if (contextOptions.compatibilityMode)
+    {
+        deviceLimits.nextInChain = &compatModeLimits;
+    }
+#endif
     const bool deviceLimitsValid = m_device.GetLimits(&deviceLimits);
 
 #ifdef RIVE_WAGYU
@@ -1804,16 +1820,44 @@ RenderContextWebGPUImpl::RenderContextWebGPUImpl(
         m_platformFeatures.supportsClockwiseFixedFunctionMode =
             m_capabilities.GL_EXT_shader_pixel_local_storage2;
     }
+#endif
 
-    // Compatibility workarounds.
-    if (m_capabilities.backendType == wgpu::BackendType::OpenGLES &&
-        gl_max_vertex_shader_storage_blocks() < 4)
+    uint32_t maxStorageBuffersInVertexStage = wgpu::kLimitU32Undefined;
+    if (deviceLimitsValid)
     {
-        // Rive requires 4 storage buffers in the vertex shader. Polyfill them
-        // if the hardware doesn't support this.
+        maxStorageBuffersInVertexStage =
+#if RIVE_WEBGPU > 1
+            m_contextOptions.compatibilityMode
+                // In compatibility mode, the vertex stage has its own
+                // storage-buffer limit.
+                ? compatModeLimits.maxStorageBuffersInVertexStage
+                :
+#endif
+                // Outside compatibility mode, there's no such split:
+                // maxStorageBuffersPerShaderStage applies to every stage,
+                // vertex included
+                deviceLimits.maxStorageBuffersPerShaderStage;
+    }
+    if (maxStorageBuffersInVertexStage == wgpu::kLimitU32Undefined)
+    {
+        maxStorageBuffersInVertexStage =
+#if RIVE_WEBGPU > 1
+            m_contextOptions.compatibilityMode
+                ? 0 // Compat mode doesn't guarantee any vertex storage buffers.
+                :
+#endif
+                8; // Core WebGPU guarantees at least 8 buffers per stage.
+    }
+    if (maxStorageBuffersInVertexStage < gpu::kMaxStorageBuffers)
+    {
+        // Rive uses storage buffers in the vertex shader. Polyfill them via
+        // textures if the device doesn't support a sufficient number of
+        // vertex-stage storage buffers.
+#if RIVE_WEBGPU > 1
+        assert(m_contextOptions.compatibilityMode);
+#endif
         m_capabilities.polyfillVertexStorageBuffers = true;
     }
-#endif
 
     // InterlockMode::atomics binds the color, clip, and coverage PLS planes as
     // storage buffers in the fragment stage. Only advertise support for atomic
@@ -1826,6 +1870,18 @@ RenderContextWebGPUImpl::RenderContextWebGPUImpl(
             "WARNING: atomic mode disabled because deviceLimits.maxStorageBuffersPerShaderStage is not at least 3.");
     }
     m_platformFeatures.atomicPLSInitNeedsDraw = true;
+
+#ifdef RIVE_WAGYU
+    // We can only use advanced blend if the client enabled it when setting up
+    // the device.
+    m_platformFeatures.supportsBlendAdvancedKHR =
+        m_platformFeatures.supportsBlendAdvancedCoherentKHR =
+            m_device.HasFeature(static_cast<wgpu::FeatureName>(
+                WGPUFeatureName_WagyuBlendEquationAdvancedCoherent));
+#endif
+
+    m_platformFeatures.supportsClipPlanes =
+        m_device.HasFeature(wgpu::FeatureName::ClipDistances);
 
     m_platformFeatures.clipSpaceBottomUp = true;
     m_platformFeatures.framebufferBottomUp = false;
@@ -1888,11 +1944,11 @@ void RenderContextWebGPUImpl::initGPUObjects()
             .sampler = m_linearSampler,
         },
         {
-            .binding = FEATHER_TEXTURE_IDX,
+            .binding = GAUSSIAN_INTEGRAL_TEXTURE_IDX,
             .sampler = m_linearSampler,
         },
         {
-            .binding = ATLAS_TEXTURE_IDX,
+            .binding = FEATHER_ATLAS_TEXTURE_IDX,
             .sampler = m_linearSampler,
         },
     };
@@ -1992,16 +2048,18 @@ void RenderContextWebGPUImpl::initGPUObjects()
            sizeof(gpu::kImageRectIndices));
     m_imageRectIndexBuffer.Unmap();
 
-    wgpu::TextureDescriptor featherTextureDesc = {
+    wgpu::TextureDescriptor gaussianIntegralTextureDesc = {
         .usage =
             wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst,
         .dimension = wgpu::TextureDimension::e2D,
-        .size = {gpu::GAUSSIAN_TABLE_SIZE, FEATHER_TEXTURE_1D_ARRAY_LENGTH},
+        .size = {gpu::GAUSSIAN_TABLE_SIZE,
+                 GAUSSIAN_INTEGRAL_TEXTURE_1D_ARRAY_LENGTH},
         .format = wgpu::TextureFormat::R16Float,
     };
 
-    m_featherTexture = m_device.CreateTexture(&featherTextureDesc);
-    wgpu::TexelCopyTextureInfo dest = {.texture = m_featherTexture};
+    m_gaussianIntegralTexture =
+        m_device.CreateTexture(&gaussianIntegralTextureDesc);
+    wgpu::TexelCopyTextureInfo dest = {.texture = m_gaussianIntegralTexture};
     wgpu::TexelCopyBufferLayout layout = {
         .bytesPerRow = sizeof(gpu::g_gaussianIntegralTableF16),
     };
@@ -2020,7 +2078,7 @@ void RenderContextWebGPUImpl::initGPUObjects()
                          sizeof(gpu::g_inverseGaussianIntegralTableF16),
                          &layout,
                          &extent);
-    m_featherTextureView = m_featherTexture.CreateView();
+    m_gaussianIntegralTextureView = m_gaussianIntegralTexture.CreateView();
 
     wgpu::TextureDescriptor nullTextureDesc = {
         .usage = wgpu::TextureUsage::TextureBinding,
@@ -2034,13 +2092,14 @@ void RenderContextWebGPUImpl::initGPUObjects()
 
     m_colorRampPipeline = std::make_unique<ColorRampPipeline>(this);
     m_tessellatePipeline = std::make_unique<TessellatePipeline>(this);
-    m_atlasPipeline = std::make_unique<AtlasPipeline>(this);
+    m_featherAtlasPipeline = std::make_unique<FeatherAtlasPipeline>(this);
 }
 
 RenderContextWebGPUImpl::~RenderContextWebGPUImpl() {}
 
 RenderTargetWebGPU::RenderTargetWebGPU(
     wgpu::Device device,
+    const gpu::PlatformFeatures& platformFeatures,
     const RenderContextWebGPUImpl::Capabilities& capabilities,
     wgpu::TextureFormat framebufferFormat,
     uint32_t width,
@@ -2049,6 +2108,8 @@ RenderTargetWebGPU::RenderTargetWebGPU(
     m_device(std::move(device)),
     m_framebufferFormat(framebufferFormat),
     m_transientPLSUsage(wgpu::TextureUsage::RenderAttachment),
+    m_transientMSAAColorUsage(wgpu::TextureUsage::RenderAttachment),
+    m_transientMSAADepthStencilUsage(wgpu::TextureUsage::RenderAttachment),
     m_targetTextureView{} // Will be configured later by setTargetTexture().
 {
 #ifdef RIVE_WAGYU
@@ -2058,6 +2119,24 @@ RenderTargetWebGPU::RenderTargetWebGPU(
     {
         m_transientPLSUsage |= static_cast<wgpu::TextureUsage>(
             WGPUTextureUsage_WagyuInputAttachment |
+            WGPUTextureUsage_WagyuTransientAttachment);
+    }
+    if (platformFeatures.supportsBlendAdvancedKHR)
+    {
+        // Since we support advanced blend, we don't need to interrupt MSAA
+        // render passes to read the framebuffer, so the MSAA buffers can be
+        // transient. Marking the buffers as transient also enables
+        // EXT_multisampled_render_to_texture in GL backends.
+        m_transientMSAAColorUsage |= static_cast<wgpu::TextureUsage>(
+            WGPUTextureUsage_WagyuTransientAttachment |
+            // In GL when using EXT_multisampled_render_to_texture,
+            // WGPUTextureUsage_WagyuMSAAResolveSource lets the driver know it
+            // doesn't actually have to allocate the memory for this color
+            // texture, and in turn, we promise not to use it in an MRT
+            // situation. (MRT is forbidden by
+            // EXT_multisampled_render_to_texture.)
+            WGPUTextureUsage_WagyuMSAAResolveSource);
+        m_transientMSAADepthStencilUsage |= static_cast<wgpu::TextureUsage>(
             WGPUTextureUsage_WagyuTransientAttachment);
     }
 #endif
@@ -2123,7 +2202,7 @@ wgpu::TextureView RenderTargetWebGPU::msaaColorTextureView()
     if (m_msaaColorTexture == nullptr)
     {
         wgpu::TextureDescriptor desc = {
-            .usage = wgpu::TextureUsage::RenderAttachment,
+            .usage = m_transientMSAAColorUsage,
             .size = {static_cast<uint32_t>(width()),
                      static_cast<uint32_t>(height())},
             .format = m_framebufferFormat,
@@ -2140,7 +2219,7 @@ wgpu::TextureView RenderTargetWebGPU::msaaDepthStencilTextureView()
     if (m_msaaDepthStencilTexture == nullptr)
     {
         wgpu::TextureDescriptor desc = {
-            .usage = wgpu::TextureUsage::RenderAttachment,
+            .usage = m_transientMSAADepthStencilUsage,
             .size = {static_cast<uint32_t>(width()),
                      static_cast<uint32_t>(height())},
             .format = wgpu::TextureFormat::Depth24PlusStencil8,
@@ -2208,6 +2287,7 @@ rcp<RenderTargetWebGPU> RenderContextWebGPUImpl::makeRenderTarget(
     uint32_t height)
 {
     return rcp(new RenderTargetWebGPU(m_device,
+                                      m_platformFeatures,
                                       m_capabilities,
                                       framebufferFormat,
                                       width,
@@ -2783,7 +2863,6 @@ std::unique_ptr<BufferRing> RenderContextWebGPUImpl::makeStorageBufferRing(
     size_t capacityInBytes,
     gpu::StorageBufferStructure bufferStructure)
 {
-#ifdef RIVE_WAGYU
     if (m_capabilities.polyfillVertexStorageBuffers)
     {
         return std::make_unique<StorageTextureBufferWebGPU>(m_device,
@@ -2792,7 +2871,6 @@ std::unique_ptr<BufferRing> RenderContextWebGPUImpl::makeStorageBufferRing(
                                                             bufferStructure);
     }
     else
-#endif
     {
         return std::make_unique<BufferWebGPU>(m_device,
                                               m_queue,
@@ -2844,8 +2922,8 @@ void RenderContextWebGPUImpl::resizeTessellationTexture(uint32_t width,
     m_tessVertexTextureView = m_tessVertexTexture.CreateView();
 }
 
-void RenderContextWebGPUImpl::resizeAtlasTexture(uint32_t width,
-                                                 uint32_t height)
+void RenderContextWebGPUImpl::resizeFeatherAtlasTexture(uint32_t width,
+                                                        uint32_t height)
 {
     width = std::max(width, 1u);
     height = std::max(height, 1u);
@@ -2857,8 +2935,8 @@ void RenderContextWebGPUImpl::resizeAtlasTexture(uint32_t width,
         .format = wgpu::TextureFormat::R16Float,
     };
 
-    m_atlasTexture = m_device.CreateTexture(&desc);
-    m_atlasTextureView = m_atlasTexture.CreateView();
+    m_featherAtlasTexture = m_device.CreateTexture(&desc);
+    m_featherAtlasTextureView = m_featherAtlasTexture.CreateView();
 }
 
 void RenderContextWebGPUImpl::resizeAtomicCoverageBacking(uint32_t width,
@@ -2909,6 +2987,135 @@ wgpu::Buffer RenderContextWebGPUImpl::atomicPLSCoverageBuffer()
     return m_atomicPLSCoverageBuffer;
 }
 
+// Appends Rive's ImageDrawInstance attribs. The caller is responsible for
+// placing these in a vertex buffer layout with WGPUVertexStepMode_Instance and
+// arrayStride = sizeof(gpu::ImageDrawInstance).
+template <uint32_t Capacity>
+static void appendImageDrawInstanceAttribs(
+    StackVector<WGPUVertexAttribute, Capacity>& attrs)
+{
+    attrs.push_back({
+        .format = WGPUVertexFormat_Float32x4,
+        .offset = (IMAGE_VIEW_MATRIX_ATTRIB_IDX - IMAGE_FIRST_ATTRIB_IDX) *
+                  sizeof(uint32_t) * 4,
+        .shaderLocation = IMAGE_VIEW_MATRIX_ATTRIB_IDX,
+    });
+    attrs.push_back({
+        .format = WGPUVertexFormat_Float32x4,
+        .offset = (IMAGE_CLIP_RECT_INVERSE_MATRIX_ATTRIB_IDX -
+                   IMAGE_FIRST_ATTRIB_IDX) *
+                  sizeof(uint32_t) * 4,
+        .shaderLocation = IMAGE_CLIP_RECT_INVERSE_MATRIX_ATTRIB_IDX,
+    });
+    attrs.push_back({
+        .format = WGPUVertexFormat_Float32x4,
+        .offset = (IMAGE_TRANSLATES_ATTRIB_IDX - IMAGE_FIRST_ATTRIB_IDX) *
+                  sizeof(uint32_t) * 4,
+        .shaderLocation = IMAGE_TRANSLATES_ATTRIB_IDX,
+    }); // translations
+    attrs.push_back({
+        .format = WGPUVertexFormat_Uint32x4,
+        .offset = (IMAGE_PACKED_ATTRIBS_IDX - IMAGE_FIRST_ATTRIB_IDX) *
+                  sizeof(uint32_t) * 4,
+        .shaderLocation = IMAGE_PACKED_ATTRIBS_IDX,
+    });
+}
+
+static WGPUBlendOperation wgpuBlendOp(gpu::BlendEquation blendEquation)
+{
+    switch (blendEquation)
+    {
+        case gpu::BlendEquation::none:
+        case gpu::BlendEquation::srcOver:
+        case gpu::BlendEquation::plus:
+            return WGPUBlendOperation_Add;
+        case gpu::BlendEquation::min:
+            return WGPUBlendOperation_Min;
+        case gpu::BlendEquation::max:
+            return WGPUBlendOperation_Max;
+#ifdef RIVE_WAGYU
+        case gpu::BlendEquation::multiply:
+            return WGPUBlendOperation_WagyuMultiply;
+        case gpu::BlendEquation::screen:
+            return WGPUBlendOperation_WagyuScreen;
+        case gpu::BlendEquation::overlay:
+            return WGPUBlendOperation_WagyuOverlay;
+        case gpu::BlendEquation::darken:
+            return WGPUBlendOperation_WagyuDarken;
+        case gpu::BlendEquation::lighten:
+            return WGPUBlendOperation_WagyuLighten;
+        case gpu::BlendEquation::colorDodge:
+            return WGPUBlendOperation_WagyuColorDodge;
+        case gpu::BlendEquation::colorBurn:
+            return WGPUBlendOperation_WagyuColorBurn;
+        case gpu::BlendEquation::hardLight:
+            return WGPUBlendOperation_WagyuHardLight;
+        case gpu::BlendEquation::softLight:
+            return WGPUBlendOperation_WagyuSoftLight;
+        case gpu::BlendEquation::difference:
+            return WGPUBlendOperation_WagyuDifference;
+        case gpu::BlendEquation::exclusion:
+            return WGPUBlendOperation_WagyuExclusion;
+        case gpu::BlendEquation::hue:
+            return WGPUBlendOperation_WagyuHue;
+        case gpu::BlendEquation::saturation:
+            return WGPUBlendOperation_WagyuSaturation;
+        case gpu::BlendEquation::color:
+            return WGPUBlendOperation_WagyuColor;
+        case gpu::BlendEquation::luminosity:
+            return WGPUBlendOperation_WagyuLuminosity;
+#else
+        case gpu::BlendEquation::multiply:
+        case gpu::BlendEquation::screen:
+        case gpu::BlendEquation::overlay:
+        case gpu::BlendEquation::darken:
+        case gpu::BlendEquation::lighten:
+        case gpu::BlendEquation::colorDodge:
+        case gpu::BlendEquation::colorBurn:
+        case gpu::BlendEquation::hardLight:
+        case gpu::BlendEquation::softLight:
+        case gpu::BlendEquation::difference:
+        case gpu::BlendEquation::exclusion:
+        case gpu::BlendEquation::hue:
+        case gpu::BlendEquation::saturation:
+        case gpu::BlendEquation::color:
+        case gpu::BlendEquation::luminosity:
+            RIVE_UNREACHABLE();
+#endif
+    }
+    RIVE_UNREACHABLE();
+}
+
+static WGPUBlendFactor wgpuDstBlendFactor(gpu::BlendEquation blendEquation)
+{
+    switch (blendEquation)
+    {
+        case gpu::BlendEquation::none:
+        case gpu::BlendEquation::srcOver:
+        case gpu::BlendEquation::multiply:
+        case gpu::BlendEquation::screen:
+        case gpu::BlendEquation::overlay:
+        case gpu::BlendEquation::darken:
+        case gpu::BlendEquation::lighten:
+        case gpu::BlendEquation::colorDodge:
+        case gpu::BlendEquation::colorBurn:
+        case gpu::BlendEquation::hardLight:
+        case gpu::BlendEquation::softLight:
+        case gpu::BlendEquation::difference:
+        case gpu::BlendEquation::exclusion:
+        case gpu::BlendEquation::hue:
+        case gpu::BlendEquation::saturation:
+        case gpu::BlendEquation::color:
+        case gpu::BlendEquation::luminosity:
+            return WGPUBlendFactor_OneMinusSrcAlpha;
+        case gpu::BlendEquation::plus:
+        case gpu::BlendEquation::min:
+        case gpu::BlendEquation::max:
+            return WGPUBlendFactor_One;
+    }
+    RIVE_UNREACHABLE();
+}
+
 wgpu::RenderPipeline RenderContextWebGPUImpl::makeDrawPipeline(
     gpu::DrawType drawType,
     gpu::ShaderFeatures shaderFeatures,
@@ -2921,8 +3128,12 @@ wgpu::RenderPipeline RenderContextWebGPUImpl::makeDrawPipeline(
     const wgsl::Shader* fragmentShader,
     const gpu::PipelineState& pipelineState)
 {
-    std::vector<WGPUVertexAttribute> attrs;
-    std::vector<WGPUVertexBufferLayout> vertexBufferLayouts;
+    // The most vertex buffers any draw type binds is the image mesh: position,
+    // uv, and the per-instance attribute buffer.
+    StackVector<WGPUVertexBufferLayout, 3> vertexBufferLayouts;
+    // The image-draw attribs come last, so the most vertex attribs used across
+    // all 3 buffers is determined by the final image attrib.
+    StackVector<WGPUVertexAttribute, IMAGE_LAST_ATTRIB_IDX + 1> attrs;
     WGPUPrimitiveTopology topology;
     switch (drawType)
     {
@@ -2932,26 +3143,25 @@ wgpu::RenderPipeline RenderContextWebGPUImpl::makeDrawPipeline(
         case DrawType::msaaOuterCubics:
         case DrawType::msaaStrokes:
         case DrawType::msaaMidpointFanBorrowedCoverage:
+        case DrawType::msaaDynamicMidpointFans:
         case DrawType::msaaMidpointFans:
         case DrawType::msaaMidpointFanStencilReset:
         case DrawType::msaaMidpointFanPathsStencil:
         case DrawType::msaaMidpointFanPathsCover:
         {
-            attrs = {
-                WGPUVertexAttribute{
-                    .format = WGPUVertexFormat_Float32x4,
-                    .offset = 0,
-                    .shaderLocation = 0,
-                },
-                WGPUVertexAttribute{
-                    .format = WGPUVertexFormat_Float32x4,
-                    .offset = 4 * sizeof(float),
-                    .shaderLocation = 1,
-                },
-            };
+            attrs.push_back({
+                .format = WGPUVertexFormat_Float32x4,
+                .offset = 0,
+                .shaderLocation = 0,
+            });
+            attrs.push_back({
+                .format = WGPUVertexFormat_Float32x4,
+                .offset = 4 * sizeof(float),
+                .shaderLocation = 1,
+            });
 
-            vertexBufferLayouts = {WGPU_VERTEX_BUFFER_LAYOUT_INIT};
-            vertexBufferLayouts[0].attributeCount = std::size(attrs);
+            vertexBufferLayouts.push_back(WGPU_VERTEX_BUFFER_LAYOUT_INIT);
+            vertexBufferLayouts[0].attributeCount = attrs.size();
             vertexBufferLayouts[0].attributes = attrs.data();
             vertexBufferLayouts[0].arrayStride = sizeof(gpu::PatchVertex);
             vertexBufferLayouts[0].stepMode = WGPUVertexStepMode_Vertex;
@@ -2961,18 +3171,16 @@ wgpu::RenderPipeline RenderContextWebGPUImpl::makeDrawPipeline(
         }
         case DrawType::clipReset:
         case DrawType::interiorTriangulation:
-        case DrawType::atlasBlit:
+        case DrawType::featherAtlasBlit:
         {
-            attrs = {
-                WGPUVertexAttribute{
-                    .format = WGPUVertexFormat_Float32x3,
-                    .offset = 0,
-                    .shaderLocation = 0,
-                },
-            };
+            attrs.push_back({
+                .format = WGPUVertexFormat_Float32x3,
+                .offset = 0,
+                .shaderLocation = 0,
+            });
 
-            vertexBufferLayouts = {WGPU_VERTEX_BUFFER_LAYOUT_INIT};
-            vertexBufferLayouts[0].attributeCount = std::size(attrs);
+            vertexBufferLayouts.push_back(WGPU_VERTEX_BUFFER_LAYOUT_INIT);
+            vertexBufferLayouts[0].attributeCount = attrs.size();
             vertexBufferLayouts[0].attributes = attrs.data();
             vertexBufferLayouts[0].arrayStride = sizeof(gpu::TriangleVertex);
             vertexBufferLayouts[0].stepMode = WGPUVertexStepMode_Vertex;
@@ -2982,40 +3190,43 @@ wgpu::RenderPipeline RenderContextWebGPUImpl::makeDrawPipeline(
         }
         case DrawType::imageRect:
         {
-            attrs = {
-                WGPUVertexAttribute{
-                    .format = WGPUVertexFormat_Float32x4,
-                    .offset = 0,
-                    .shaderLocation = 0,
-                },
-            };
+            attrs.push_back({
+                .format = WGPUVertexFormat_Float32x4,
+                .offset = 0,
+                .shaderLocation = 0,
+            });
+            appendImageDrawInstanceAttribs(attrs);
 
-            vertexBufferLayouts = {WGPU_VERTEX_BUFFER_LAYOUT_INIT};
-            vertexBufferLayouts[0].attributeCount = std::size(attrs);
-            vertexBufferLayouts[0].attributes = attrs.data();
+            vertexBufferLayouts.push_back_n(2, WGPU_VERTEX_BUFFER_LAYOUT_INIT);
+            vertexBufferLayouts[0].attributeCount = 1;
+            vertexBufferLayouts[0].attributes = &attrs[0];
             vertexBufferLayouts[0].arrayStride = sizeof(gpu::ImageRectVertex);
             vertexBufferLayouts[0].stepMode = WGPUVertexStepMode_Vertex;
+
+            assert(attrs.size() == 1 + IMAGE_ATTRIB_COUNT);
+            vertexBufferLayouts[1].attributeCount = IMAGE_ATTRIB_COUNT;
+            vertexBufferLayouts[1].attributes = &attrs[1];
+            vertexBufferLayouts[1].arrayStride = sizeof(gpu::ImageDrawInstance);
+            vertexBufferLayouts[1].stepMode = WGPUVertexStepMode_Instance;
 
             topology = WGPUPrimitiveTopology_TriangleList;
             break;
         }
         case DrawType::imageMesh:
         {
-            attrs = {
-                WGPUVertexAttribute{
-                    .format = WGPUVertexFormat_Float32x2,
-                    .offset = 0,
-                    .shaderLocation = 0,
-                },
-                WGPUVertexAttribute{
-                    .format = WGPUVertexFormat_Float32x2,
-                    .offset = 0,
-                    .shaderLocation = 1,
-                },
-            };
+            attrs.push_back({
+                .format = WGPUVertexFormat_Float32x2,
+                .offset = 0,
+                .shaderLocation = 0,
+            });
+            attrs.push_back({
+                .format = WGPUVertexFormat_Float32x2,
+                .offset = 0,
+                .shaderLocation = 1,
+            });
+            appendImageDrawInstanceAttribs(attrs);
 
-            vertexBufferLayouts = {WGPU_VERTEX_BUFFER_LAYOUT_INIT,
-                                   WGPU_VERTEX_BUFFER_LAYOUT_INIT};
+            vertexBufferLayouts.push_back_n(3, WGPU_VERTEX_BUFFER_LAYOUT_INIT);
 
             vertexBufferLayouts[0].attributeCount = 1;
             vertexBufferLayouts[0].attributes = &attrs[0];
@@ -3026,6 +3237,12 @@ wgpu::RenderPipeline RenderContextWebGPUImpl::makeDrawPipeline(
             vertexBufferLayouts[1].attributes = &attrs[1];
             vertexBufferLayouts[1].arrayStride = sizeof(float) * 2;
             vertexBufferLayouts[1].stepMode = WGPUVertexStepMode_Vertex;
+
+            assert(attrs.size() == 2 + IMAGE_ATTRIB_COUNT);
+            vertexBufferLayouts[2].attributeCount = IMAGE_ATTRIB_COUNT;
+            vertexBufferLayouts[2].attributes = &attrs[2];
+            vertexBufferLayouts[2].arrayStride = sizeof(gpu::ImageDrawInstance);
+            vertexBufferLayouts[2].stepMode = WGPUVertexStepMode_Instance;
 
             topology = WGPUPrimitiveTopology_TriangleList;
             break;
@@ -3056,17 +3273,26 @@ wgpu::RenderPipeline RenderContextWebGPUImpl::makeDrawPipeline(
     }
 #endif
 
+    const WGPUBlendComponent blendComponent = {
+        .operation = wgpuBlendOp(pipelineState.blendEquation),
+        .srcFactor = WGPUBlendFactor_One,
+        .dstFactor = wgpuDstBlendFactor(pipelineState.blendEquation),
+    };
+
+    const WGPUBlendState blendState = {
+        .color = blendComponent,
+        .alpha = blendComponent,
+    };
+
     StackVector<WGPUColorTargetState, PLS_PLANE_COUNT> colorAttachments;
 
     assert(colorAttachments.size() == COLOR_PLANE_IDX);
-    assert(pipelineState.blendEquation == gpu::BlendEquation::none ||
-           pipelineState.blendEquation == gpu::BlendEquation::srcOver);
     colorAttachments.push_back({
         .nextInChain = extraColorTargetState,
         .format = static_cast<WGPUTextureFormat>(framebufferFormat),
-        .blend = (pipelineState.blendEquation == gpu::BlendEquation::srcOver)
-                     ? &BLEND_STATE_SRC_OVER
-                     : nullptr,
+        .blend = (pipelineState.blendEquation == gpu::BlendEquation::none)
+                     ? nullptr
+                     : &blendState,
         .writeMask = pipelineState.colorWriteEnabled ? WGPUColorWriteMask_All
                                                      : WGPUColorWriteMask_None,
     });
@@ -3224,7 +3450,7 @@ wgpu::RenderPipeline RenderContextWebGPUImpl::makeDrawPipeline(
     WGPUWagyuFragmentState wagyuFragmentState = WGPU_WAGYU_FRAGMENT_STATE_INIT;
     if (usingPLSInputAttachments)
     {
-        for (size_t i = 0; i < PLS_PLANE_COUNT; ++i)
+        for (uint32_t i = 0; i < PLS_PLANE_COUNT; ++i)
         {
             inputAttachments[i] = WGPU_WAGYU_INPUT_ATTACHMENT_STATE_INIT;
             inputAttachments[i].format = colorAttachments[i].format;
@@ -3253,8 +3479,8 @@ wgpu::RenderPipeline RenderContextWebGPUImpl::makeDrawPipeline(
                 .entryPoint = WGPU_STRING_VIEW("main"),
                 .constantCount = vertexConstantCount,
                 .constants = vertexConstantEntries,
-                .bufferCount = std::size(vertexBufferLayouts),
-                .buffers = vertexBufferLayouts.data(),
+                .bufferCount = vertexBufferLayouts.size(),
+                .buffers = vertexBufferLayouts.dataOrNull(),
             },
         .primitive =
             {
@@ -3864,7 +4090,6 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
         commandEncoder = wgpu::CommandEncoder::Acquire(wgpuEncoder);
     }
 
-#ifdef RIVE_WAGYU
     // If storage buffers are disabled, copy their contents to textures.
     if (m_capabilities.polyfillVertexStorageBuffers)
     {
@@ -3892,7 +4117,6 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
                                                             commandEncoder);
         }
     }
-#endif
 
     wgpu::BindGroupEntry perFlushBindingEntries[DRAW_BINDINGS_COUNT] = {
         {
@@ -3900,74 +4124,61 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
             .buffer = webgpu_buffer(flushUniformBufferRing()),
             .offset = desc.flushUniformDataOffsetInBytes,
         },
-#ifdef RIVE_WAGYU
         m_capabilities.polyfillVertexStorageBuffers
             ? wgpu::BindGroupEntry{.binding = PATH_BUFFER_IDX,
                                    .textureView = webgpu_storage_texture_view(
                                        pathBufferRing())}
             :
-#endif
             wgpu::BindGroupEntry{
                 .binding = PATH_BUFFER_IDX,
                 .buffer = webgpu_buffer(pathBufferRing()),
                 .offset = desc.firstPath * sizeof(gpu::PathData),
             },
-#ifdef RIVE_WAGYU
         m_capabilities.polyfillVertexStorageBuffers ?
             wgpu::BindGroupEntry{
                 .binding = PAINT_BUFFER_IDX,
                 .textureView = webgpu_storage_texture_view(paintBufferRing()),
             } :
-#endif
             wgpu::BindGroupEntry{
                 .binding = PAINT_BUFFER_IDX,
                 .buffer = webgpu_buffer(paintBufferRing()),
                 .offset = desc.firstPaint * sizeof(gpu::PaintData),
             },
-#ifdef RIVE_WAGYU
         m_capabilities.polyfillVertexStorageBuffers ?
             wgpu::BindGroupEntry{
                 .binding = PAINT_AUX_BUFFER_IDX,
                 .textureView = webgpu_storage_texture_view(paintAuxBufferRing()),
             } :
-#endif
             wgpu::BindGroupEntry{
                 .binding = PAINT_AUX_BUFFER_IDX,
                 .buffer = webgpu_buffer(paintAuxBufferRing()),
                 .offset = desc.firstPaintAux * sizeof(gpu::PaintAuxData),
             },
-#ifdef RIVE_WAGYU
         m_capabilities.polyfillVertexStorageBuffers ?
             wgpu::BindGroupEntry{
                 .binding = CONTOUR_BUFFER_IDX,
                 .textureView = webgpu_storage_texture_view(contourBufferRing()),
             } :
-#endif
             wgpu::BindGroupEntry{
                 .binding = CONTOUR_BUFFER_IDX,
                 .buffer = webgpu_buffer(contourBufferRing()),
                 .offset = desc.firstContour * sizeof(gpu::ContourData),
             },
         {
-            .binding = FEATHER_TEXTURE_IDX,
-            .textureView = m_featherTextureView,
+            .binding = GAUSSIAN_INTEGRAL_TEXTURE_IDX,
+            .textureView = m_gaussianIntegralTextureView,
         },
         {
             .binding = TESS_VERTEX_TEXTURE_IDX,
             .textureView = m_tessVertexTextureView,
         },
         {
-            .binding = ATLAS_TEXTURE_IDX,
-            .textureView = m_atlasTextureView,
+            .binding = FEATHER_ATLAS_TEXTURE_IDX,
+            .textureView = m_featherAtlasTextureView,
         },
         {
             .binding = GRAD_TEXTURE_IDX,
             .textureView = m_gradientTextureView,
-        },
-        {
-            .binding = IMAGE_DRAW_UNIFORM_BUFFER_IDX,
-            .buffer = webgpu_buffer(imageDrawUniformBufferRing()),
-            .size = sizeof(gpu::ImageDrawUniforms),
         },
         {
             .binding = DST_COLOR_TEXTURE_IDX,
@@ -4070,16 +4281,17 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
     }
 
     // Render the atlas if we have any offscreen feathers.
-    if ((desc.atlasFillBatchCount | desc.atlasStrokeBatchCount) != 0)
+    if ((desc.featherAtlasFillBatchCount | desc.featherAtlasStrokeBatchCount) !=
+        0)
     {
         wgpu::BindGroupDescriptor atlasBindGroupDesc = {
-            .layout = m_atlasPipeline->perFlushBindingsLayout(),
-            .entryCount = ATLAS_BINDINGS_COUNT,
+            .layout = m_featherAtlasPipeline->perFlushBindingsLayout(),
+            .entryCount = FEATHER_ATLAS_BINDINGS_COUNT,
             .entries = perFlushBindingEntries,
         };
 
         wgpu::RenderPassColorAttachment attachment{
-            .view = m_atlasTextureView,
+            .view = m_featherAtlasTextureView,
             .loadOp = wgpu::LoadOp::Clear,
             .storeOp = wgpu::StoreOp::Store,
             .clearValue = {0, 0, 0, 0},
@@ -4094,8 +4306,8 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
             commandEncoder.BeginRenderPass(&atlasPassDesc);
         atlasPass.SetViewport(0.f,
                               0.f,
-                              desc.atlasContentWidth,
-                              desc.atlasContentHeight,
+                              desc.featherAtlasContentWidth,
+                              desc.featherAtlasContentHeight,
                               0.0,
                               1.0);
         atlasPass.SetVertexBuffer(0, m_pathPatchVertexBuffer);
@@ -4105,12 +4317,13 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
                                m_device.CreateBindGroup(&atlasBindGroupDesc));
         atlasPass.SetBindGroup(WEBGPU_SAMPLER_BINDINGS_SET, m_samplerBindings);
 
-        if (desc.atlasFillBatchCount != 0)
+        if (desc.featherAtlasFillBatchCount != 0)
         {
-            atlasPass.SetPipeline(m_atlasPipeline->fillPipeline());
-            for (size_t i = 0; i < desc.atlasFillBatchCount; ++i)
+            atlasPass.SetPipeline(m_featherAtlasPipeline->fillPipeline());
+            for (size_t i = 0; i < desc.featherAtlasFillBatchCount; ++i)
             {
-                const gpu::AtlasDrawBatch& fillBatch = desc.atlasFillBatches[i];
+                const gpu::AtlasDrawBatch& fillBatch =
+                    desc.featherAtlasFillBatches[i];
                 atlasPass.SetScissorRect(fillBatch.scissor.left,
                                          fillBatch.scissor.top,
                                          fillBatch.scissor.width(),
@@ -4123,13 +4336,13 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
             }
         }
 
-        if (desc.atlasStrokeBatchCount != 0)
+        if (desc.featherAtlasStrokeBatchCount != 0)
         {
-            atlasPass.SetPipeline(m_atlasPipeline->strokePipeline());
-            for (size_t i = 0; i < desc.atlasStrokeBatchCount; ++i)
+            atlasPass.SetPipeline(m_featherAtlasPipeline->strokePipeline());
+            for (size_t i = 0; i < desc.featherAtlasStrokeBatchCount; ++i)
             {
                 const gpu::AtlasDrawBatch& strokeBatch =
-                    desc.atlasStrokeBatches[i];
+                    desc.featherAtlasStrokeBatches[i];
                 atlasPass.SetScissorRect(strokeBatch.scissor.left,
                                          strokeBatch.scissor.top,
                                          strokeBatch.scissor.width(),
@@ -4271,8 +4484,15 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
     wgpu::BindGroup perFlushBindings =
         m_device.CreateBindGroup(&perFlushBindGroupDesc);
 
+    // The drawEncoder isn't necessarily created yet. (e.g., MSAA sometimes
+    // defers creation of the drawEncoder until the first barrier.) So defer
+    // binding the per-flush uniforms until we know the drawEncoder is valid.
+    bool needsPerFlushBindings = true;
+
+    wgpu::TextureView boundImageTextureView = {};
+    const ImageSampler* boundImageSampler;
+
     // Execute the DrawList.
-    bool needsNewBindings = true;
     for (const DrawBatch& batch : *desc.drawList)
     {
         DrawType drawType = batch.drawType;
@@ -4286,8 +4506,18 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
                 // the barrier. Make sure to give the new drawEncoder our
                 // current bindings.
                 drawEncoder = renderPass->encoder();
-                needsNewBindings = true;
+                needsPerFlushBindings = true;
+                boundImageTextureView = {};
             }
+        }
+
+        if (needsPerFlushBindings)
+        {
+            drawEncoder.SetBindGroup(PER_FLUSH_BINDINGS_SET,
+                                     perFlushBindings,
+                                     0,
+                                     nullptr);
+            needsPerFlushBindings = false;
         }
 
         // Bind the appropriate image texture, if any.
@@ -4296,7 +4526,6 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
                 static_cast<const TextureWebGPUImpl*>(batch.imageTexture))
         {
             imageTextureView = imageTexture->textureView();
-            needsNewBindings = true;
         }
         else if (drawType == gpu::DrawType::renderPassInitialize &&
                  desc.colorLoadAction == gpu::LoadAction::preserveRenderTarget)
@@ -4308,7 +4537,6 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
                 // attachment (not the target), so the target texture is free to
                 // be sampled here to seed the color buffer. No dst copy needed.
                 imageTextureView = renderTarget->targetTextureView();
-                needsNewBindings = true;
             }
             else if (desc.interlockMode == gpu::InterlockMode::msaa)
             {
@@ -4316,20 +4544,11 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
                 // as the resolve target, so it seeds from the dstColorTexture
                 // (copied from the framebuffer previously) instead.
                 imageTextureView = renderTarget->dstColorTextureView();
-                needsNewBindings = true;
             }
         }
-
-        if (needsNewBindings ||
-            // Image draws always re-bind because they update the dynamic offset
-            // to their uniforms.
-            gpu::DrawTypeIsImageDraw(drawType))
+        if (boundImageTextureView.Get() != imageTextureView.Get() ||
+            *boundImageSampler != batch.imageSampler)
         {
-            drawEncoder.SetBindGroup(PER_FLUSH_BINDINGS_SET,
-                                     perFlushBindings,
-                                     1,
-                                     &batch.imageDrawDataOffset);
-
             wgpu::BindGroupEntry perDrawBindingEntries[] = {
                 {
                     .binding = IMAGE_TEXTURE_IDX,
@@ -4355,7 +4574,8 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
                                      0,
                                      nullptr);
 
-            needsNewBindings = false;
+            boundImageTextureView = std::move(imageTextureView);
+            boundImageSampler = &batch.imageSampler;
         }
 
         // Setup the pipeline for this specific drawType and shaderFeatures.
@@ -4474,6 +4694,7 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
             case DrawType::msaaOuterCubics:
             case DrawType::msaaStrokes:
             case DrawType::msaaMidpointFanBorrowedCoverage:
+            case DrawType::msaaDynamicMidpointFans:
             case DrawType::msaaMidpointFans:
             case DrawType::msaaMidpointFanStencilReset:
             case DrawType::msaaMidpointFanPathsStencil:
@@ -4483,9 +4704,9 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
                 drawEncoder.SetVertexBuffer(0, m_pathPatchVertexBuffer);
                 drawEncoder.SetIndexBuffer(m_pathPatchIndexBuffer,
                                            wgpu::IndexFormat::Uint16);
-                drawEncoder.DrawIndexed(gpu::PatchIndexCount(drawType),
+                drawEncoder.DrawIndexed(batch.indexCountPerInstance,
                                         batch.elementCount,
-                                        gpu::PatchBaseIndex(drawType),
+                                        batch.baseIndex,
                                         0,
                                         batch.baseElement);
                 break;
@@ -4493,7 +4714,7 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
 
             case DrawType::clipReset:
             case DrawType::interiorTriangulation:
-            case DrawType::atlasBlit:
+            case DrawType::featherAtlasBlit:
             {
                 drawEncoder.SetVertexBuffer(
                     0,
@@ -4506,11 +4727,21 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
             {
                 assert(desc.interlockMode == gpu::InterlockMode::atomics);
                 drawEncoder.SetVertexBuffer(0, m_imageRectVertexBuffer);
+                // Select the batch's fistInstance by offsetting the buffer
+                // binding. We do this rather than "firstInstance=baseElement"
+                // on the draw call because baseInstance support isn't portable
+                // on GL, and we have seen drivers with bugs in their emulation.
+                drawEncoder.SetVertexBuffer(
+                    1,
+                    webgpu_buffer(imageDrawInstanceBufferRing()),
+                    batch.baseElement * sizeof(gpu::ImageDrawInstance));
                 drawEncoder.SetIndexBuffer(m_imageRectIndexBuffer,
                                            wgpu::IndexFormat::Uint16);
-                drawEncoder.DrawIndexed(std::size(gpu::kImageRectIndices),
-                                        1,
-                                        batch.baseElement);
+                drawEncoder.DrawIndexed(batch.indexCountPerInstance,
+                                        batch.elementCount,
+                                        batch.baseIndex,
+                                        0,
+                                        0);
                 break;
             }
 
@@ -4524,11 +4755,21 @@ void RenderContextWebGPUImpl::flush(const FlushDescriptor& desc)
                     batch.indexBuffer);
                 drawEncoder.SetVertexBuffer(0, vertexBuffer->submittedBuffer());
                 drawEncoder.SetVertexBuffer(1, uvBuffer->submittedBuffer());
+                // Select the batch's fistInstance by offsetting the buffer
+                // binding. We do this rather than "firstInstance=baseElement"
+                // on the draw call because baseInstance support isn't portable
+                // on GL, and we have seen drivers with bugs in their emulation.
+                drawEncoder.SetVertexBuffer(
+                    2,
+                    webgpu_buffer(imageDrawInstanceBufferRing()),
+                    batch.baseElement * sizeof(gpu::ImageDrawInstance));
                 drawEncoder.SetIndexBuffer(indexBuffer->submittedBuffer(),
                                            wgpu::IndexFormat::Uint16);
-                drawEncoder.DrawIndexed(batch.elementCount,
-                                        1,
-                                        batch.baseElement);
+                drawEncoder.DrawIndexed(batch.indexCountPerInstance,
+                                        batch.elementCount,
+                                        batch.baseIndex,
+                                        0,
+                                        0);
                 break;
             }
 
